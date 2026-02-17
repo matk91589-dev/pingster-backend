@@ -14,7 +14,7 @@ def home():
 def find_match():
     data = request.json
     print("Получен запрос на поиск:", data)
-    
+
     # Пока просто возвращаем тестовый ответ
     return jsonify({
         "status": "searching",
