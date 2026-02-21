@@ -13,7 +13,7 @@ bot = telebot.TeleBot(TOKEN)
 
 # Генерация ссылки на Mini App
 def get_mini_app_url(telegram_id):
-    return f'https://matk91589-dev-pingster-backend-e306.twc1.net?tg_id={telegram_id}'
+    return f'https://matk91589-dev-pinster-0b38.twc1.net?tg_id={telegram_id}'
 
 # Команда /start
 @bot.message_handler(commands=['start'])
