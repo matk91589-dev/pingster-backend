@@ -1,3 +1,10 @@
+import sys
+import os
+
+# Добавляем путь к установленным библиотекам (для Timeweb)
+sys.path.append('/app/.local/lib/python3.14/site-packages')
+sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
+
 from flask import Flask, request, jsonify
 import psycopg2
 import random
