@@ -1,91 +1,55 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-import os
 import psycopg2
-from psycopg2.extras import RealDictCursor
+import random
 
 app = Flask(__name__)
-CORS(app)
 
-# ============================================
-# ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (TimeWeb)
-# ============================================
-DB_CONFIG = {
-    "host": "192.168.0.5",
-    "port": "5432",
-    "database": "default_db",
-    "user": "gen_user",
-    "password": "{,@~:5my>jvOAj" 
-}
-
+# Подключение к базе
 def get_db():
-    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+    return psycopg2.connect(
+        host="85.239.33.182",
+        database="pingster_db",
+        user="gen_user",
+        password="{,@~:5my>jvOAj",
+        port=5432
+    )
 
-# ============================================
-# СОЗДАНИЕ ТАБЛИЦЫ (вызвать один раз)
-# ============================================
-@app.route('/setup_db', methods=['GET'])
-def setup_db():
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username TEXT,
-                avatar TEXT,
-                age INTEGER,
-                steam_link TEXT,
-                faceit_link TEXT,
-                coins INTEGER DEFAULT 1000,
-                owned_nicks TEXT[] DEFAULT '{}',
-                owned_frames TEXT[] DEFAULT '{}',
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
+# Функция генерации player_id
+def generate_player_id():
+    return str(random.randint(10000000, 99999999))
+
+# Эндпоинт входа
+@app.route('/api/user/init', methods=['POST'])
+def init_user():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Проверяем есть ли пользователь
+    cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+    user = cursor.fetchone()
+    
+    if not user:
+        # Создаем нового
+        player_id = generate_player_id()
+        cursor.execute("""
+            INSERT INTO users (telegram_id, username, player_id, last_active, is_online)
+            VALUES (%s, %s, %s, NOW(), true)
+        """, (data['telegram_id'], data['username'], player_id))
         conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"status": "ok", "message": "Table created"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
-
-# ============================================
-# ТЕСТОВЫЙ МАРШРУТ
-# ============================================
-@app.route('/')
-def home():
-    return jsonify({"message": "Pingster backend is running!"})
-
-# ============================================
-# ЗАГЛУШКА ПОИСКА
-# ============================================
-@app.route('/find_match', methods=['POST'])
-def find_match():
-    data = request.json
-    print("Получен запрос на поиск:", data)
-
-    # Здесь будет алгоритм подбора
-    # Пока просто заглушка
-    return jsonify({
-        "status": "searching",
-        "message": "Поиск запущен (тест)"
-    })
-
-# ============================================
-# ЗАГЛУШКА СОХРАНЕНИЯ ПРОФИЛЯ
-# ============================================
-@app.route('/save_profile', methods=['POST'])
-def save_profile():
-    data = request.json
-    print("Сохраняем профиль:", data)
-
-    # Здесь будет сохранение в БД
-    # Пока просто заглушка
-    return jsonify({
-        "status": "ok",
-        "message": "Profile saved (test)"
-    })
+        print(f"✅ Новый пользователь: {data['username']} (ID: {player_id})")
+    else:
+        # Обновляем активность
+        cursor.execute("""
+            UPDATE users SET last_active = NOW(), is_online = true
+            WHERE telegram_id = %s
+        """, (data['telegram_id'],))
+        conn.commit()
+        print(f"🔄 Пользователь {data['username']} зашел снова")
+    
+    cursor.close()
+    conn.close()
+    return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)
