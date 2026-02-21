@@ -7,7 +7,7 @@ import time
 TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 
 # URL твоего API (ВНУТРЕННИЙ адрес контейнера)
-API_URL = 'http://172.18.0.2:5000/api'
+API_URL = 'http://127.0.0.1:5000/api'
 
 bot = telebot.TeleBot(TOKEN)
 
