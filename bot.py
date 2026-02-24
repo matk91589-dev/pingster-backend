@@ -6,8 +6,8 @@ import time
 # Твой токен
 TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 
-# URL твоего API (ВНУТРЕННИЙ адрес контейнера)
-API_URL = 'http://127.0.0.1:5000/api'
+# URL твоего API (ВНЕШНИЙ адрес сервера)
+API_URL = 'http://85.239.33.182:5000/api'
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -23,6 +23,7 @@ def start(message):
     
     try:
         print(f"👉 Получен /start от {username} (ID: {telegram_id})")
+        print(f"📡 Отправка запроса на {API_URL}/user/init")
         
         # Отправляем данные в API
         response = requests.post(f'{API_URL}/user/init', json={
@@ -31,23 +32,27 @@ def start(message):
         }, timeout=10)
         
         print(f"✅ Ответ от API: {response.status_code}")
-        data = response.json()
-        print(f"📦 Данные: {data}")
+        print(f"📦 Текст ответа: {response.text}")
         
-        if data.get('status') == 'ok':
-            mini_app_url = get_mini_app_url(telegram_id)
-            bot.reply_to(message, 
-                f"🎮 Добро пожаловать в Pingster!\n\n"
-                f"👤 Твой игровой ID: {data.get('player_id')}\n"
-                f"⭐ Твой рейтинг: 0\n\n"
-                f"👇 Открывай Mini App и ищи тиммейтов:\n"
-                f"{mini_app_url}"
-            )
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('status') == 'ok':
+                mini_app_url = get_mini_app_url(telegram_id)
+                bot.reply_to(message, 
+                    f"🎮 Добро пожаловать в Pingster!\n\n"
+                    f"👤 Твой игровой ID: {data.get('player_id')}\n"
+                    f"⭐ Твой рейтинг: 0\n\n"
+                    f"👇 Открывай Mini App и ищи тиммейтов:\n"
+                    f"{mini_app_url}"
+                )
+            else:
+                bot.reply_to(message, "❌ Ошибка при регистрации")
         else:
-            bot.reply_to(message, "❌ Ошибка при регистрации")
-    except requests.exceptions.ConnectionError:
-        bot.reply_to(message, "❌ Не могу подключиться к серверу. Попробуй позже.")
-        print("❌ ConnectionError: API не доступен")
+            bot.reply_to(message, f"❌ Ошибка сервера: {response.status_code}")
+            
+    except requests.exceptions.ConnectionError as e:
+        bot.reply_to(message, "❌ Не могу подключиться к серверу. Проверь, запущен ли сервер и доступен ли порт 5000.")
+        print(f"❌ ConnectionError: {e}")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
         print(f"❌ Ошибка: {str(e)}")
@@ -70,6 +75,7 @@ def help(message):
 # Запуск бота с автоматическим переподключением
 if __name__ == '__main__':
     print("🤖 Pingster бот запущен...")
+    print(f"📡 API URL: {API_URL}")
     while True:
         try:
             bot.polling(none_stop=True, interval=0, timeout=20)
