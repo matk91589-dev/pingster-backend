@@ -7,7 +7,7 @@ import time
 TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 
 # URL твоего API (ВНЕШНИЙ адрес сервера)
-API_URL = 'http://85.239.33.182:5000'
+API_URL = 'http://85.239.33.182:5000/api'
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -71,6 +71,18 @@ def help(message):
         "3. Нажми 'Найти тиммейта'\n"
         "4. Прими мэтч и играй!"
     )
+
+# Команда /check (проверка сервера)
+@bot.message_handler(commands=['check'])
+def check(message):
+    try:
+        response = requests.get(f'{API_URL}', timeout=5)
+        if response.status_code == 200:
+            bot.reply_to(message, f"✅ Сервер доступен!\nОтвет: {response.text}")
+        else:
+            bot.reply_to(message, f"❌ Сервер вернул ошибку: {response.status_code}")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка подключения: {str(e)}")
 
 # Запуск бота с автоматическим переподключением
 if __name__ == '__main__':
