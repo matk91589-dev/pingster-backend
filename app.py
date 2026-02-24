@@ -1,16 +1,17 @@
 import sys
 import os
 
-# Добавляем путь к установленным библиотекам (для Timeweb)
 sys.path.append('/app/.local/lib/python3.14/site-packages')
 sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # Добавь это
 import psycopg2
 import random
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
+CORS(app)  # Разрешаем запросы с других доменов
 
 # Подключение к базе
 def get_db():
@@ -31,7 +32,11 @@ def generate_player_id():
 # ============================================
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({"message": "Pingster backend is running!"})
+    return jsonify({"message": "Pingster backend is running!", "status": "ok"})
+
+@app.route('/api', methods=['GET'])
+def api_root():
+    return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
 # ============================================
 # ЭНДПОИНТ 2: Инициализация пользователя
@@ -43,12 +48,10 @@ def init_user():
     cursor = conn.cursor()
     
     try:
-        # Проверяем есть ли пользователь
         cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
         user = cursor.fetchone()
         
         if not user:
-            # Создаем нового
             player_id = generate_player_id()
             cursor.execute("""
                 INSERT INTO users (telegram_id, username, player_id, last_active, is_online)
@@ -59,7 +62,6 @@ def init_user():
             conn.commit()
             return jsonify({"status": "ok", "new_user": True, "user_id": new_id, "player_id": player_id})
         else:
-            # Обновляем активность
             cursor.execute("""
                 UPDATE users SET last_active = NOW(), is_online = true
                 WHERE telegram_id = %s
@@ -85,7 +87,6 @@ def start_search():
     cursor = conn.cursor()
     
     try:
-        # Получаем user_id по telegram_id
         cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
         user = cursor.fetchone()
         if not user:
@@ -93,10 +94,8 @@ def start_search():
         
         user_id = user[0]
         
-        # Удаляем старые записи этого пользователя из очереди
         cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
         
-        # Добавляем в очередь
         cursor.execute("""
             INSERT INTO search_queue (user_id, mode, rank_value, age, steam_link, faceit_link)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -154,7 +153,6 @@ def check_match():
         
         user_id = user[0]
         
-        # Ищем мэтч где этот пользователь участвует
         cursor.execute("""
             SELECT * FROM matches 
             WHERE (user1_id = %s OR user2_id = %s) 
@@ -165,10 +163,8 @@ def check_match():
         match = cursor.fetchone()
         
         if match:
-            # Определяем кто второй игрок
             other_id = match[1] if match[1] != user_id else match[2]
             
-            # Получаем данные второго игрока из очереди поиска
             cursor.execute("""
                 SELECT age, mode, rank_value, steam_link, faceit_link 
                 FROM search_queue WHERE user_id = %s
@@ -212,14 +208,12 @@ def respond_match():
         
         user_id = user[0]
         
-        # Получаем мэтч
         cursor.execute("SELECT * FROM matches WHERE id = %s", (data['match_id'],))
         match = cursor.fetchone()
         
         if not match:
             return jsonify({"error": "Match not found"}), 404
         
-        # Определяем, кто из игроков отвечает
         if match[1] == user_id:
             cursor.execute("UPDATE matches SET user1_response = %s WHERE id = %s", (data['response'], data['match_id']))
         elif match[2] == user_id:
@@ -227,22 +221,16 @@ def respond_match():
         else:
             return jsonify({"error": "User not in this match"}), 403
         
-        # Проверяем, ответили ли оба
         cursor.execute("SELECT user1_response, user2_response FROM matches WHERE id = %s", (data['match_id'],))
         responses = cursor.fetchone()
         
         if responses[0] == 'accept' and responses[1] == 'accept':
-            # Оба приняли
             cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
-            
-            # Удаляем обоих из очереди
             cursor.execute("DELETE FROM search_queue WHERE user_id IN (%s, %s)", (match[1], match[2]))
-            
             conn.commit()
             return jsonify({"status": "accepted", "both_accepted": True})
         
         elif responses[0] == 'reject' or responses[1] == 'reject':
-            # Кто-то отклонил
             cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", (data['match_id'],))
             conn.commit()
             return jsonify({"status": "rejected", "both_accepted": False})
@@ -260,4 +248,6 @@ def respond_match():
 # ЗАПУСК СЕРВЕРА
 # ============================================
 if __name__ == '__main__':
+    print("🚀 Pingster backend запускается...")
+    print(f"📡 Сервер будет доступен по адресу: https://matk91589-dev-pinster-0b38.twc1.net")
     app.run(host='0.0.0.0', port=5000, debug=True)
