@@ -7,7 +7,7 @@ import time
 TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 
 # URL твоего API (ВНЕШНИЙ адрес сервера)
-API_URL = 'https://matk91589-dev-pinster-0b38.twc1.net/api'
+API_URL = 'http://85.239.33.182:5000'
 
 bot = telebot.TeleBot(TOKEN)
 
