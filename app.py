@@ -5,7 +5,7 @@ sys.path.append('/app/.local/lib/python3.14/site-packages')
 sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # Добавь это
+from flask_cors import CORS
 import psycopg2
 import random
 from datetime import datetime, timedelta
@@ -245,9 +245,10 @@ def respond_match():
         conn.close()
 
 # ============================================
-# ЗАПУСК СЕРВЕРА
+# ЗАПУСК СЕРВЕРА (для Timeweb Cloud не нужен)
 # ============================================
 if __name__ == '__main__':
     print("🚀 Pingster backend запускается...")
     print(f"📡 Сервер будет доступен по адресу: https://matk91589-dev-pinster-0b38.twc1.net")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Timeweb Cloud использует Gunicorn, поэтому этот код не выполнится
+    # app.run(host='0.0.0.0', port=5000, debug=True) - ЗАКОММЕНТИРОВАНО
