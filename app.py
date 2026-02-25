@@ -94,6 +94,173 @@ def init_user():
         conn.close()
 
 # ============================================
+# ЭНДПОИНТ 3: Начать поиск
+# ============================================
+@app.route('/api/search/start', methods=['POST'])
+def start_search():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        user_id = user[0]
+        
+        cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
+        
+        cursor.execute("""
+            INSERT INTO search_queue (user_id, mode, rank_value, age, steam_link, faceit_link)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (user_id, data['mode'], data['rank'], data['age'], data['steam_link'], data.get('faceit_link')))
+        
+        conn.commit()
+        return jsonify({"status": "searching"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ЭНДПОИНТ 4: Остановить поиск
+# ============================================
+@app.route('/api/search/stop', methods=['POST'])
+def stop_search():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user[0],))
+        conn.commit()
+        return jsonify({"status": "stopped"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ЭНДПОИНТ 5: Проверить мэтч
+# ============================================
+@app.route('/api/match/check', methods=['POST'])
+def check_match():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        user_id = user[0]
+        
+        cursor.execute("""
+            SELECT * FROM matches 
+            WHERE (user1_id = %s OR user2_id = %s) 
+            AND status = 'pending'
+            ORDER BY id DESC LIMIT 1
+        """, (user_id, user_id))
+        
+        match = cursor.fetchone()
+        
+        if match:
+            other_id = match[1] if match[1] != user_id else match[2]
+            
+            cursor.execute("""
+                SELECT age, mode, rank_value, steam_link, faceit_link 
+                FROM search_queue WHERE user_id = %s
+            """, (other_id,))
+            other_data = cursor.fetchone()
+            
+            return jsonify({
+                "match_found": True,
+                "match_id": match[0],
+                "opponent": {
+                    "age": other_data[0],
+                    "mode": other_data[1],
+                    "rank": other_data[2],
+                    "steam_link": other_data[3],
+                    "faceit_link": other_data[4]
+                }
+            })
+        else:
+            return jsonify({"match_found": False})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ЭНДПОИНТ 6: Ответить на мэтч
+# ============================================
+@app.route('/api/match/respond', methods=['POST'])
+def respond_match():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        user_id = user[0]
+        
+        cursor.execute("SELECT * FROM matches WHERE id = %s", (data['match_id'],))
+        match = cursor.fetchone()
+        
+        if not match:
+            return jsonify({"error": "Match not found"}), 404
+        
+        if match[1] == user_id:
+            cursor.execute("UPDATE matches SET user1_response = %s WHERE id = %s", (data['response'], data['match_id']))
+        elif match[2] == user_id:
+            cursor.execute("UPDATE matches SET user2_response = %s WHERE id = %s", (data['response'], data['match_id']))
+        else:
+            return jsonify({"error": "User not in this match"}), 403
+        
+        cursor.execute("SELECT user1_response, user2_response FROM matches WHERE id = %s", (data['match_id'],))
+        responses = cursor.fetchone()
+        
+        if responses[0] == 'accept' and responses[1] == 'accept':
+            cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
+            cursor.execute("DELETE FROM search_queue WHERE user_id IN (%s, %s)", (match[1], match[2]))
+            conn.commit()
+            return jsonify({"status": "accepted", "both_accepted": True})
+        
+        elif responses[0] == 'reject' or responses[1] == 'reject':
+            cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", (data['match_id'],))
+            conn.commit()
+            return jsonify({"status": "rejected", "both_accepted": False})
+        else:
+            conn.commit()
+            return jsonify({"status": "waiting", "both_accepted": False})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
 # ЭНДПОИНТ 7: Получить инвентарь пользователя
 # ============================================
 @app.route('/api/inventory/get', methods=['POST'])
@@ -388,37 +555,16 @@ def get_balance():
         conn.close()
 
 # ============================================
-# ЭНДПОИНТЫ ПОИСКА (уже есть)
-# ============================================
-# ... (твои старые эндпоинты поиска остаются без изменений)
-
-@app.route('/api/search/start', methods=['POST'])
-def start_search():
-    # ... твой существующий код
-    pass
-
-@app.route('/api/search/stop', methods=['POST'])
-def stop_search():
-    # ... твой существующий код
-    pass
-
-@app.route('/api/match/check', methods=['POST'])
-def check_match():
-    # ... твой существующий код
-    pass
-
-@app.route('/api/match/respond', methods=['POST'])
-def respond_match():
-    # ... твой существующий код
-    pass
-
-# ============================================
 # ЗАПУСК СЕРВЕРА
 # ============================================
 if __name__ == '__main__':
     print("🚀 Pingster backend запускается...")
     print("✅ Эндпоинты:")
     print("   - /api/user/init")
+    print("   - /api/search/start")
+    print("   - /api/search/stop")
+    print("   - /api/match/check")
+    print("   - /api/match/respond")
     print("   - /api/inventory/get")
     print("   - /api/shop/buy")
     print("   - /api/case/open")
@@ -427,7 +573,3 @@ if __name__ == '__main__':
     print("   - /api/avatar/get")
     print("   - /api/avatar/save")
     print("   - /api/user/balance")
-    print("   - /api/search/start")
-    print("   - /api/search/stop")
-    print("   - /api/match/check")
-    print("   - /api/match/respond")
