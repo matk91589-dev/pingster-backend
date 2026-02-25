@@ -11,9 +11,8 @@ import random
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
-CORS(app)  # Разрешаем запросы с других доменов
+CORS(app)
 
-# Подключение к базе
 def get_db():
     return psycopg2.connect(
         host="85.239.33.182",
@@ -23,7 +22,6 @@ def get_db():
         port=5432
     )
 
-# Вспомогательная функция для получения user_id по telegram_id
 def get_user_id(telegram_id):
     conn = get_db()
     cursor = conn.cursor()
@@ -33,12 +31,15 @@ def get_user_id(telegram_id):
     conn.close()
     return user[0] if user else None
 
-# Генерация player_id
 def generate_player_id():
     return str(random.randint(10000000, 99999999))
 
+def generate_random_nick():
+    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+    return ''.join(random.choice(chars) for _ in range(6))
+
 # ============================================
-# ЭНДПОИНТ 1: Главная (проверка сервера)
+# ГЛАВНАЯ
 # ============================================
 @app.route('/', methods=['GET'])
 def home():
@@ -49,7 +50,7 @@ def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
 # ============================================
-# ЭНДПОИНТ 2: Инициализация пользователя
+# ИНИЦИАЛИЗАЦИЯ ПОЛЬЗОВАТЕЛЯ
 # ============================================
 @app.route('/api/user/init', methods=['POST'])
 def init_user():
@@ -62,29 +63,57 @@ def init_user():
         user = cursor.fetchone()
         
         if not user:
+            # Создаём пользователя
             player_id = generate_player_id()
             cursor.execute("""
-                INSERT INTO users (telegram_id, username, player_id, last_active, is_online, pingcoins)
-                VALUES (%s, %s, %s, NOW(), true, 1000)
+                INSERT INTO users (telegram_id, username, player_id, last_active, is_online)
+                VALUES (%s, %s, %s, NOW(), true)
                 RETURNING id
             """, (data['telegram_id'], data['username'], player_id))
             new_id = cursor.fetchone()[0]
+            
+            # Создаём профиль с ником и 1000 монет
+            nick = generate_random_nick()
+            cursor.execute("""
+                INSERT INTO profiles (user_id, nick, pingcoins)
+                VALUES (%s, %s, 1000)
+            """, (new_id, nick))
+            
             conn.commit()
-            return jsonify({"status": "ok", "new_user": True, "user_id": new_id, "player_id": player_id, "pingcoins": 1000})
+            
+            return jsonify({
+                "status": "ok", 
+                "new_user": True, 
+                "user_id": new_id, 
+                "player_id": player_id,
+                "nick": nick,
+                "pingcoins": 1000
+            })
         else:
+            # Обновляем last_active
+            user_id = user[0]
             cursor.execute("""
                 UPDATE users SET last_active = NOW(), is_online = true
-                WHERE telegram_id = %s
-                RETURNING id, player_id, pingcoins
-            """, (data['telegram_id'],))
-            user_data = cursor.fetchone()
+                WHERE id = %s
+                RETURNING player_id
+            """, (user_id,))
+            player_id = cursor.fetchone()[0]
+            
+            # Получаем данные профиля
+            cursor.execute("""
+                SELECT nick, pingcoins FROM profiles WHERE user_id = %s
+            """, (user_id,))
+            profile = cursor.fetchone()
+            
             conn.commit()
+            
             return jsonify({
                 "status": "ok", 
                 "new_user": False, 
-                "user_id": user_data[0], 
-                "player_id": user_data[1],
-                "pingcoins": user_data[2]
+                "user_id": user_id, 
+                "player_id": player_id,
+                "nick": profile[0],
+                "pingcoins": profile[1]
             })
     
     except Exception as e:
@@ -94,7 +123,347 @@ def init_user():
         conn.close()
 
 # ============================================
-# ЭНДПОИНТ 3: Начать поиск
+# ПОЛУЧИТЬ ПРОФИЛЬ
+# ============================================
+@app.route('/api/profile/get', methods=['POST'])
+def get_profile():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("""
+            SELECT nick, age, steam_link, faceit_link, avatar_base64, pingcoins
+            FROM profiles WHERE user_id = %s
+        """, (user_id,))
+        profile = cursor.fetchone()
+        
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        
+        return jsonify({
+            "status": "ok",
+            "nick": profile[0],
+            "age": profile[1],
+            "steam_link": profile[2],
+            "faceit_link": profile[3],
+            "avatar": profile[4],
+            "pingcoins": profile[5]
+        })
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ОБНОВИТЬ ПРОФИЛЬ
+# ============================================
+@app.route('/api/profile/update', methods=['POST'])
+def update_profile():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("""
+            UPDATE profiles 
+            SET nick = COALESCE(%s, nick),
+                age = COALESCE(%s, age),
+                steam_link = COALESCE(%s, steam_link),
+                faceit_link = COALESCE(%s, faceit_link),
+                updated_at = NOW()
+            WHERE user_id = %s
+        """, (
+            data.get('nick'),
+            data.get('age'),
+            data.get('steam_link'),
+            data.get('faceit_link'),
+            user_id
+        ))
+        
+        conn.commit()
+        return jsonify({"status": "ok"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# СОХРАНИТЬ АВАТАРКУ
+# ============================================
+@app.route('/api/avatar/save', methods=['POST'])
+def save_avatar():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("""
+            UPDATE profiles SET avatar_base64 = %s WHERE user_id = %s
+        """, (data['avatar_base64'], user_id))
+        
+        conn.commit()
+        return jsonify({"status": "ok"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ПОЛУЧИТЬ БАЛАНС
+# ============================================
+@app.route('/api/user/balance', methods=['POST'])
+def get_balance():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
+        balance = cursor.fetchone()[0]
+        
+        return jsonify({"status": "ok", "balance": balance})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# КУПИТЬ КЕЙС
+# ============================================
+@app.route('/api/shop/buy', methods=['POST'])
+def buy_case():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        # Проверяем баланс
+        cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
+        coins = cursor.fetchone()[0]
+        
+        if coins < data['price']:
+            return jsonify({"error": "Not enough coins"}), 400
+        
+        # Списываем монеты
+        cursor.execute("UPDATE profiles SET pingcoins = pingcoins - %s WHERE user_id = %s", 
+                      (data['price'], user_id))
+        
+        # Добавляем кейс в инвентарь
+        cursor.execute("""
+            INSERT INTO inventory (user_id, case_id, case_name, unique_id, status_case)
+            VALUES (%s, %s, %s, %s, 'new')
+        """, (user_id, data['case_id'], data['case_name'], data['unique_id']))
+        
+        conn.commit()
+        
+        # Получаем новый баланс
+        cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
+        new_balance = cursor.fetchone()[0]
+        
+        return jsonify({"status": "ok", "new_balance": new_balance})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ПОЛУЧИТЬ ИНВЕНТАРЬ
+# ============================================
+@app.route('/api/inventory/get', methods=['POST'])
+def get_inventory():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("""
+            SELECT case_id, case_name, unique_id, status_case, 
+                   item_id, item_name, status_item
+            FROM inventory 
+            WHERE user_id = %s
+            ORDER BY 
+                CASE WHEN status_case = 'new' THEN 0 ELSE 1 END,
+                CASE WHEN status_item = 'new' THEN 0 ELSE 1 END,
+                unique_id DESC
+        """, (user_id,))
+        
+        items = cursor.fetchall()
+        
+        inventory_list = []
+        for item in items:
+            inventory_list.append({
+                "case_id": item[0],
+                "case_name": item[1],
+                "unique_id": item[2],
+                "status_case": item[3],
+                "item_id": item[4],
+                "item_name": item[5],
+                "status_item": item[6]
+            })
+        
+        return jsonify({"status": "ok", "inventory": inventory_list})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ОТКРЫТЬ КЕЙС
+# ============================================
+@app.route('/api/case/open', methods=['POST'])
+def open_case():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("""
+            UPDATE inventory 
+            SET status_case = 'opened',
+                item_id = %s,
+                item_name = %s,
+                status_item = 'new'
+            WHERE unique_id = %s AND user_id = %s
+            RETURNING case_id, case_name
+        """, (data['item_id'], data['item_name'], data['unique_id'], user_id))
+        
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({"error": "Case not found"}), 404
+        
+        conn.commit()
+        
+        return jsonify({
+            "status": "ok", 
+            "case_id": result[0],
+            "case_name": result[1],
+            "item_id": data['item_id'],
+            "item_name": data['item_name']
+        })
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# ОБНОВИТЬ СТАТУС ПРЕДМЕТА
+# ============================================
+@app.route('/api/item/update_status', methods=['POST'])
+def update_item_status():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("""
+            UPDATE inventory 
+            SET status_item = %s
+            WHERE unique_id = %s AND user_id = %s
+            RETURNING item_id, item_name
+        """, (data['status'], data['unique_id'], user_id))
+        
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({"error": "Item not found"}), 404
+        
+        conn.commit()
+        
+        return jsonify({
+            "status": "ok",
+            "item_id": result[0],
+            "item_name": result[1],
+            "new_status": data['status']
+        })
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# УДАЛИТЬ ПРЕДМЕТ
+# ============================================
+@app.route('/api/item/delete', methods=['POST'])
+def delete_item():
+    data = request.json
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        user_id = get_user_id(data['telegram_id'])
+        if not user_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.execute("""
+            DELETE FROM inventory 
+            WHERE unique_id = %s AND user_id = %s
+            RETURNING item_id, item_name
+        """, (data['unique_id'], user_id))
+        
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({"error": "Item not found"}), 404
+        
+        conn.commit()
+        
+        return jsonify({"status": "ok", "deleted": result[0]})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# ============================================
+# НАЧАТЬ ПОИСК
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -128,7 +497,7 @@ def start_search():
         conn.close()
 
 # ============================================
-# ЭНДПОИНТ 4: Остановить поиск
+# ОСТАНОВИТЬ ПОИСК
 # ============================================
 @app.route('/api/search/stop', methods=['POST'])
 def stop_search():
@@ -153,7 +522,7 @@ def stop_search():
         conn.close()
 
 # ============================================
-# ЭНДПОИНТ 5: Проверить мэтч
+# ПРОВЕРИТЬ МЭТЧ
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -208,7 +577,7 @@ def check_match():
         conn.close()
 
 # ============================================
-# ЭНДПОИНТ 6: Ответить на мэтч
+# ОТВЕТИТЬ НА МЭТЧ
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
@@ -261,315 +630,22 @@ def respond_match():
         conn.close()
 
 # ============================================
-# ЭНДПОИНТ 7: Получить инвентарь пользователя
-# ============================================
-@app.route('/api/inventory/get', methods=['POST'])
-def get_inventory():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        cursor.execute("""
-            SELECT case_id, case_name, unique_id, status_case, 
-                   item_id, item_name, status_item
-            FROM inventory 
-            WHERE user_id = %s
-            ORDER BY 
-                CASE WHEN status_case = 'new' THEN 0 ELSE 1 END,
-                CASE WHEN status_item = 'new' THEN 0 ELSE 1 END,
-                unique_id DESC
-        """, (user_id,))
-        
-        items = cursor.fetchall()
-        
-        inventory_list = []
-        for item in items:
-            inventory_list.append({
-                "case_id": item[0],
-                "case_name": item[1],
-                "unique_id": item[2],
-                "status_case": item[3],
-                "item_id": item[4],
-                "item_name": item[5],
-                "status_item": item[6]
-            })
-        
-        return jsonify({"status": "ok", "inventory": inventory_list})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЭНДПОИНТ 8: Купить кейс
-# ============================================
-@app.route('/api/shop/buy', methods=['POST'])
-def buy_case():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        # Проверяем баланс
-        cursor.execute("SELECT pingcoins FROM users WHERE id = %s", (user_id,))
-        coins = cursor.fetchone()[0]
-        
-        if coins < data['price']:
-            return jsonify({"error": "Not enough coins"}), 400
-        
-        # Списываем монеты
-        cursor.execute("UPDATE users SET pingcoins = pingcoins - %s WHERE id = %s", 
-                      (data['price'], user_id))
-        
-        # Добавляем кейс в инвентарь
-        cursor.execute("""
-            INSERT INTO inventory (user_id, case_id, case_name, unique_id, status_case)
-            VALUES (%s, %s, %s, %s, 'new')
-        """, (user_id, data['case_id'], data['case_name'], data['unique_id']))
-        
-        conn.commit()
-        
-        # Получаем новый баланс
-        cursor.execute("SELECT pingcoins FROM users WHERE id = %s", (user_id,))
-        new_balance = cursor.fetchone()[0]
-        
-        return jsonify({"status": "ok", "new_balance": new_balance})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЭНДПОИНТ 9: Открыть кейс
-# ============================================
-@app.route('/api/case/open', methods=['POST'])
-def open_case():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        # Обновляем кейс
-        cursor.execute("""
-            UPDATE inventory 
-            SET status_case = 'opened',
-                item_id = %s,
-                item_name = %s,
-                status_item = 'new'
-            WHERE unique_id = %s AND user_id = %s
-            RETURNING case_id, case_name
-        """, (data['item_id'], data['item_name'], data['unique_id'], user_id))
-        
-        result = cursor.fetchone()
-        if not result:
-            return jsonify({"error": "Case not found"}), 404
-        
-        conn.commit()
-        
-        return jsonify({
-            "status": "ok", 
-            "case_id": result[0],
-            "case_name": result[1],
-            "item_id": data['item_id'],
-            "item_name": data['item_name']
-        })
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЭНДПОИНТ 10: Обновить статус предмета (new -> old)
-# ============================================
-@app.route('/api/item/update_status', methods=['POST'])
-def update_item_status():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        cursor.execute("""
-            UPDATE inventory 
-            SET status_item = %s
-            WHERE unique_id = %s AND user_id = %s
-            RETURNING item_id, item_name
-        """, (data['status'], data['unique_id'], user_id))
-        
-        result = cursor.fetchone()
-        if not result:
-            return jsonify({"error": "Item not found"}), 404
-        
-        conn.commit()
-        
-        return jsonify({
-            "status": "ok",
-            "item_id": result[0],
-            "item_name": result[1],
-            "new_status": data['status']
-        })
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЭНДПОИНТ 11: Удалить предмет (при продаже)
-# ============================================
-@app.route('/api/item/delete', methods=['POST'])
-def delete_item():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        cursor.execute("""
-            DELETE FROM inventory 
-            WHERE unique_id = %s AND user_id = %s
-            RETURNING item_id, item_name
-        """, (data['unique_id'], user_id))
-        
-        result = cursor.fetchone()
-        if not result:
-            return jsonify({"error": "Item not found"}), 404
-        
-        conn.commit()
-        
-        return jsonify({"status": "ok", "deleted": result[0]})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЭНДПОИНТ 12: Получить аватарку
-# ============================================
-@app.route('/api/avatar/get', methods=['POST'])
-def get_avatar():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        cursor.execute("SELECT avatar_base64 FROM avatars WHERE user_id = %s", (user_id,))
-        avatar = cursor.fetchone()
-        
-        return jsonify({
-            "status": "ok", 
-            "avatar": avatar[0] if avatar else None
-        })
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЭНДПОИНТ 13: Сохранить аватарку
-# ============================================
-@app.route('/api/avatar/save', methods=['POST'])
-def save_avatar():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        cursor.execute("""
-            INSERT INTO avatars (user_id, avatar_base64) 
-            VALUES (%s, %s)
-            ON CONFLICT (user_id) DO UPDATE 
-            SET avatar_base64 = EXCLUDED.avatar_base64
-        """, (user_id, data['avatar_base64']))
-        
-        conn.commit()
-        return jsonify({"status": "ok"})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЭНДПОИНТ 14: Получить баланс Pingcoins
-# ============================================
-@app.route('/api/user/balance', methods=['POST'])
-def get_balance():
-    data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        cursor.execute("SELECT pingcoins FROM users WHERE id = %s", (user_id,))
-        balance = cursor.fetchone()[0]
-        
-        return jsonify({"status": "ok", "balance": balance})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# ============================================
-# ЗАПУСК СЕРВЕРА
+# ЗАПУСК
 # ============================================
 if __name__ == '__main__':
     print("🚀 Pingster backend запускается...")
     print("✅ Эндпоинты:")
     print("   - /api/user/init")
+    print("   - /api/profile/get")
+    print("   - /api/profile/update")
+    print("   - /api/avatar/save")
+    print("   - /api/user/balance")
+    print("   - /api/shop/buy")
+    print("   - /api/inventory/get")
+    print("   - /api/case/open")
+    print("   - /api/item/update_status")
+    print("   - /api/item/delete")
     print("   - /api/search/start")
     print("   - /api/search/stop")
     print("   - /api/match/check")
     print("   - /api/match/respond")
-    print("   - /api/inventory/get")
-    print("   - /api/shop/buy")
-    print("   - /api/case/open")
-    print("   - /api/item/update_status")
-    print("   - /api/item/delete")
-    print("   - /api/avatar/get")
-    print("   - /api/avatar/save")
-    print("   - /api/user/balance")
