@@ -11,9 +11,11 @@ API_URL = 'https://matk91589-dev-pingster-backend-e306.twc1.net/api'
 
 bot = telebot.TeleBot(TOKEN)
 
-# Генерация ссылки на Mini App
+# Генерация ссылки на Mini App (через Telegram)
 def get_mini_app_url(telegram_id):
-    return f'https://matk91589-dev-pinster-0b38.twc1.net?tg_id={telegram_id}'
+    # Используем username бота без @
+    bot_username = 'pingster_team_bot'
+    return f'https://t.me/{bot_username}/app?startapp={telegram_id}'
 
 # Команда /start
 @bot.message_handler(commands=['start'])
@@ -38,12 +40,23 @@ def start(message):
             data = response.json()
             if data.get('status') == 'ok':
                 mini_app_url = get_mini_app_url(telegram_id)
-                bot.reply_to(message, 
-                    f"🎮 Добро пожаловать в Pingster!\n\n"
-                    f"👤 Твой игровой ID: {data.get('player_id')}\n"
-                    f"⭐ Твой рейтинг: 0\n\n"
-                    f"👇 Открывай Mini App и ищи тиммейтов:\n"
-                    f"{mini_app_url}"
+                
+                # Создаем красивые кнопки
+                markup = telebot.types.InlineKeyboardMarkup()
+                web_app_button = telebot.types.InlineKeyboardButton(
+                    text="🚀 Открыть Pingster",
+                    web_app=telebot.types.WebAppInfo(url=f'https://matk91589-dev-pinster-0b38.twc1.net?tg_id={telegram_id}')
+                )
+                markup.add(web_app_button)
+                
+                bot.send_message(
+                    message.chat.id,
+                    f"🎮 **Добро пожаловать в Pingster!**\n\n"
+                    f"👤 Твой игровой ID: `{data.get('player_id')}`\n"
+                    f"⭐ Твой рейтинг: **0**\n\n"
+                    f"👇 Нажми кнопку ниже, чтобы открыть Mini App:",
+                    parse_mode='Markdown',
+                    reply_markup=markup
                 )
             else:
                 bot.reply_to(message, "❌ Ошибка при регистрации")
@@ -51,7 +64,7 @@ def start(message):
             bot.reply_to(message, f"❌ Ошибка сервера: {response.status_code}")
             
     except requests.exceptions.ConnectionError as e:
-        bot.reply_to(message, "❌ Не могу подключиться к серверу. Проверь, запущен ли сервер и доступен ли порт 5000.")
+        bot.reply_to(message, "❌ Не могу подключиться к серверу. Проверь, запущен ли сервер.")
         print(f"❌ ConnectionError: {e}")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
@@ -60,16 +73,27 @@ def start(message):
 # Команда /help
 @bot.message_handler(commands=['help'])
 def help(message):
-    bot.reply_to(message, 
-        "🎮 Pingster — поиск тиммейтов для CS2\n\n"
-        "Команды:\n"
+    markup = telebot.types.InlineKeyboardMarkup()
+    web_app_button = telebot.types.InlineKeyboardButton(
+        text="🚀 Открыть Pingster",
+        web_app=telebot.types.WebAppInfo(url='https://matk91589-dev-pinster-0b38.twc1.net')
+    )
+    markup.add(web_app_button)
+    
+    bot.send_message(
+        message.chat.id,
+        "🎮 **Pingster — поиск тиммейтов для CS2**\n\n"
+        "**Команды:**\n"
         "/start - Начать\n"
-        "/help - Помощь\n\n"
-        "Как это работает:\n"
-        "1. Открой Mini App\n"
+        "/help - Помощь\n"
+        "/check - Проверить сервер\n\n"
+        "**Как это работает:**\n"
+        "1. Открой Mini App по кнопке ниже\n"
         "2. Заполни профиль\n"
         "3. Нажми 'Найти тиммейта'\n"
-        "4. Прими мэтч и играй!"
+        "4. Прими мэтч и играй!",
+        parse_mode='Markdown',
+        reply_markup=markup
     )
 
 # Команда /check (проверка сервера)
