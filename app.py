@@ -31,17 +31,18 @@ def get_db():
         port=5432
     )
 
-def get_user_id(telegram_id):
-    logger.debug(f"Поиск user_id по telegram_id: {telegram_id}")
+def get_player_id(telegram_id):
+    """Получает player_id по telegram_id"""
+    logger.debug(f"Поиск player_id по telegram_id: {telegram_id}")
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (telegram_id,))
-    user = cursor.fetchone()
+    cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+    result = cursor.fetchone()
     cursor.close()
     conn.close()
-    if user:
-        logger.debug(f"Найден user_id: {user[0]}")
-        return user[0]
+    if result:
+        logger.debug(f"Найден player_id: {result[0]}")
+        return result[0]
     logger.debug("Пользователь не найден")
     return None
 
@@ -95,7 +96,7 @@ def init_user():
         
         # Проверяем пользователя
         logger.debug(f"Поиск пользователя с telegram_id: {data['telegram_id']}")
-        cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+        cursor.execute("SELECT id, player_id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
         user = cursor.fetchone()
         logger.debug(f"Результат поиска: {user}")
         
@@ -106,18 +107,18 @@ def init_user():
             cursor.execute("""
                 INSERT INTO users (telegram_id, username, player_id, last_active, is_online)
                 VALUES (%s, %s, %s, NOW(), true)
-                RETURNING id
+                RETURNING id, player_id
             """, (data['telegram_id'], data.get('username', 'no_username'), player_id))
-            new_id = cursor.fetchone()[0]
-            logger.info(f"✅ Создан пользователь с ID: {new_id}")
+            new_id, player_id = cursor.fetchone()
+            logger.info(f"✅ Создан пользователь с ID: {new_id}, player_id: {player_id}")
             
-            # Создаём профиль с ником и 1000 монет
+            # Создаём профиль с ником и 1000 монет, используя player_id
             nick = generate_random_nick()
-            logger.debug(f"Создание профиля для user_id: {new_id}, nick: {nick}")
+            logger.debug(f"Создание профиля для player_id: {player_id}, nick: {nick}")
             cursor.execute("""
-                INSERT INTO profiles (user_id, nick, pingcoins)
+                INSERT INTO profiles (player_id, nick, pingcoins)
                 VALUES (%s, %s, 1000)
-            """, (new_id, nick))
+            """, (player_id, nick))
             logger.info("✅ Профиль создан")
             
             conn.commit()
@@ -132,34 +133,32 @@ def init_user():
                 "pingcoins": 1000
             })
         else:
-            user_id = user[0]
-            logger.info(f"👤 Существующий пользователь ID: {user_id}")
+            user_id, player_id = user
+            logger.info(f"👤 Существующий пользователь ID: {user_id}, player_id: {player_id}")
             
             # Обновляем last_active
             cursor.execute("""
                 UPDATE users SET last_active = NOW(), is_online = true
                 WHERE id = %s
-                RETURNING player_id
             """, (user_id,))
-            player_id = cursor.fetchone()[0]
-            logger.debug(f"Обновлен last_active, player_id: {player_id}")
+            logger.debug(f"Обновлен last_active для user_id: {user_id}")
             
-            # Проверяем, есть ли профиль
-            logger.debug(f"Поиск профиля для user_id: {user_id}")
-            cursor.execute("SELECT nick, pingcoins FROM profiles WHERE user_id = %s", (user_id,))
+            # Проверяем, есть ли профиль по player_id
+            logger.debug(f"Поиск профиля для player_id: {player_id}")
+            cursor.execute("SELECT nick, pingcoins FROM profiles WHERE player_id = %s", (player_id,))
             profile = cursor.fetchone()
             logger.debug(f"Профиль найден: {profile}")
             
             if not profile:
-                logger.warning(f"Профиль не найден для user_id: {user_id}, создаем новый")
+                logger.warning(f"Профиль не найден для player_id: {player_id}, создаем новый")
                 # Если профиля нет — создаём
                 nick = generate_random_nick()
                 cursor.execute("""
-                    INSERT INTO profiles (user_id, nick, pingcoins)
+                    INSERT INTO profiles (player_id, nick, pingcoins)
                     VALUES (%s, %s, 1000)
-                """, (user_id, nick))
+                """, (player_id, nick))
                 conn.commit()
-                logger.info(f"✅ Создан недостающий профиль для user_id={user_id}")
+                logger.info(f"✅ Создан недостающий профиль для player_id={player_id}")
                 
                 return jsonify({
                     "status": "ok", 
@@ -215,28 +214,29 @@ def get_profile():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
         
-        logger.debug(f"Получение профиля для user_id: {user_id}")
+        logger.debug(f"Получение профиля для player_id: {player_id}")
         cursor.execute("""
             SELECT nick, age, steam_link, faceit_link, avatar_base64, pingcoins
-            FROM profiles WHERE user_id = %s
-        """, (user_id,))
+            FROM profiles WHERE player_id = %s
+        """, (player_id,))
         profile = cursor.fetchone()
         logger.debug(f"Профиль: {profile}")
         
         if not profile:
-            logger.error(f"Profile not found for user_id: {user_id}")
+            logger.error(f"Profile not found for player_id: {player_id}")
             return jsonify({"error": "Profile not found"}), 404
         
         return jsonify({
             "status": "ok",
+            "player_id": player_id,
             "nick": profile[0],
             "age": profile[1],
             "steam_link": profile[2],
@@ -275,15 +275,15 @@ def update_profile():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
         
-        logger.debug(f"Обновление профиля для user_id: {user_id}")
+        logger.debug(f"Обновление профиля для player_id: {player_id}")
         cursor.execute("""
             UPDATE profiles 
             SET nick = COALESCE(%s, nick),
@@ -291,13 +291,13 @@ def update_profile():
                 steam_link = COALESCE(%s, steam_link),
                 faceit_link = COALESCE(%s, faceit_link),
                 updated_at = NOW()
-            WHERE user_id = %s
+            WHERE player_id = %s
         """, (
             data.get('nick'),
             data.get('age'),
             data.get('steam_link'),
             data.get('faceit_link'),
-            user_id
+            player_id
         ))
         
         conn.commit()
@@ -337,18 +337,18 @@ def save_avatar():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
         
-        logger.debug(f"Сохранение аватарки для user_id: {user_id}")
+        logger.debug(f"Сохранение аватарки для player_id: {player_id}")
         cursor.execute("""
-            UPDATE profiles SET avatar_base64 = %s WHERE user_id = %s
-        """, (data.get('avatar_base64'), user_id))
+            UPDATE profiles SET avatar_base64 = %s WHERE player_id = %s
+        """, (data.get('avatar_base64'), player_id))
         
         conn.commit()
         logger.info("✅ Аватарка сохранена")
@@ -387,16 +387,16 @@ def get_balance():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
         
-        logger.debug(f"Получение баланса для user_id: {user_id}")
-        cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
+        logger.debug(f"Получение баланса для player_id: {player_id}")
+        cursor.execute("SELECT pingcoins FROM profiles WHERE player_id = %s", (player_id,))
         result = cursor.fetchone()
         balance = result[0] if result else 0
         logger.debug(f"Баланс: {balance}")
@@ -433,8 +433,8 @@ def buy_case():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
@@ -442,11 +442,11 @@ def buy_case():
         cursor = conn.cursor()
         
         # Проверяем баланс
-        logger.debug(f"Проверка баланса для user_id: {user_id}")
-        cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
+        logger.debug(f"Проверка баланса для player_id: {player_id}")
+        cursor.execute("SELECT pingcoins FROM profiles WHERE player_id = %s", (player_id,))
         result = cursor.fetchone()
         if not result:
-            logger.error(f"Profile not found for user_id: {user_id}")
+            logger.error(f"Profile not found for player_id: {player_id}")
             return jsonify({"error": "Profile not found"}), 404
         
         coins = result[0]
@@ -459,11 +459,14 @@ def buy_case():
         
         # Списываем монеты
         logger.debug(f"Списываем {price} монет")
-        cursor.execute("UPDATE profiles SET pingcoins = pingcoins - %s WHERE user_id = %s", 
-                      (price, user_id))
+        cursor.execute("UPDATE profiles SET pingcoins = pingcoins - %s WHERE player_id = %s", 
+                      (price, player_id))
         
-        # Добавляем кейс в инвентарь
-        logger.debug(f"Добавление кейса в инвентарь: {data.get('case_id')}")
+        # Добавляем кейс в инвентарь (используем user_id из сессии или получаем его)
+        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
+        user_id = cursor.fetchone()[0]
+        
+        logger.debug(f"Добавление кейса в инвентарь для user_id: {user_id}, case: {data.get('case_id')}")
         cursor.execute("""
             INSERT INTO inventory (user_id, case_id, case_name, unique_id, status_case)
             VALUES (%s, %s, %s, %s, 'new')
@@ -473,7 +476,7 @@ def buy_case():
         logger.info("✅ Покупка совершена")
         
         # Получаем новый баланс
-        cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
+        cursor.execute("SELECT pingcoins FROM profiles WHERE player_id = %s", (player_id,))
         new_balance = cursor.fetchone()[0]
         logger.debug(f"Новый баланс: {new_balance}")
         
@@ -511,13 +514,17 @@ def get_inventory():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
+        
+        # Получаем user_id для inventory
+        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
+        user_id = cursor.fetchone()[0]
         
         logger.debug(f"Получение инвентаря для user_id: {user_id}")
         cursor.execute("""
@@ -578,13 +585,17 @@ def open_case():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
+        
+        # Получаем user_id
+        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
+        user_id = cursor.fetchone()[0]
         
         logger.debug(f"Открытие кейса для user_id: {user_id}, unique_id: {data.get('unique_id')}")
         cursor.execute("""
@@ -645,13 +656,17 @@ def update_item_status():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
+        
+        # Получаем user_id
+        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
+        user_id = cursor.fetchone()[0]
         
         logger.debug(f"Обновление статуса предмета: {data.get('unique_id')} -> {data.get('status')}")
         cursor.execute("""
@@ -708,13 +723,17 @@ def delete_item():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
+        
+        # Получаем user_id
+        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
+        user_id = cursor.fetchone()[0]
         
         logger.debug(f"Удаление предмета: {data.get('unique_id')}")
         cursor.execute("""
