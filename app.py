@@ -54,7 +54,13 @@ def api_root():
 # ============================================
 @app.route('/api/user/init', methods=['POST'])
 def init_user():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -69,7 +75,7 @@ def init_user():
                 INSERT INTO users (telegram_id, username, player_id, last_active, is_online)
                 VALUES (%s, %s, %s, NOW(), true)
                 RETURNING id
-            """, (data['telegram_id'], data['username'], player_id))
+            """, (data['telegram_id'], data.get('username', 'no_username'), player_id))
             new_id = cursor.fetchone()[0]
             
             # Создаём профиль с ником и 1000 монет
@@ -112,8 +118,8 @@ def init_user():
                 "new_user": False, 
                 "user_id": user_id, 
                 "player_id": player_id,
-                "nick": profile[0],
-                "pingcoins": profile[1]
+                "nick": profile[0] if profile else None,
+                "pingcoins": profile[1] if profile else 0
             })
     
     except Exception as e:
@@ -127,7 +133,13 @@ def init_user():
 # ============================================
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -166,7 +178,13 @@ def get_profile():
 # ============================================
 @app.route('/api/profile/update', methods=['POST'])
 def update_profile():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -205,7 +223,13 @@ def update_profile():
 # ============================================
 @app.route('/api/avatar/save', methods=['POST'])
 def save_avatar():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -216,7 +240,7 @@ def save_avatar():
         
         cursor.execute("""
             UPDATE profiles SET avatar_base64 = %s WHERE user_id = %s
-        """, (data['avatar_base64'], user_id))
+        """, (data.get('avatar_base64'), user_id))
         
         conn.commit()
         return jsonify({"status": "ok"})
@@ -232,7 +256,13 @@ def save_avatar():
 # ============================================
 @app.route('/api/user/balance', methods=['POST'])
 def get_balance():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -242,7 +272,8 @@ def get_balance():
             return jsonify({"error": "User not found"}), 404
         
         cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
-        balance = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        balance = result[0] if result else 0
         
         return jsonify({"status": "ok", "balance": balance})
     
@@ -257,7 +288,13 @@ def get_balance():
 # ============================================
 @app.route('/api/shop/buy', methods=['POST'])
 def buy_case():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -268,9 +305,13 @@ def buy_case():
         
         # Проверяем баланс
         cursor.execute("SELECT pingcoins FROM profiles WHERE user_id = %s", (user_id,))
-        coins = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        if not result:
+            return jsonify({"error": "Profile not found"}), 404
         
-        if coins < data['price']:
+        coins = result[0]
+        
+        if coins < data.get('price', 0):
             return jsonify({"error": "Not enough coins"}), 400
         
         # Списываем монеты
@@ -302,7 +343,13 @@ def buy_case():
 # ============================================
 @app.route('/api/inventory/get', methods=['POST'])
 def get_inventory():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -349,7 +396,13 @@ def get_inventory():
 # ============================================
 @app.route('/api/case/open', methods=['POST'])
 def open_case():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -366,7 +419,7 @@ def open_case():
                 status_item = 'new'
             WHERE unique_id = %s AND user_id = %s
             RETURNING case_id, case_name
-        """, (data['item_id'], data['item_name'], data['unique_id'], user_id))
+        """, (data.get('item_id'), data.get('item_name'), data.get('unique_id'), user_id))
         
         result = cursor.fetchone()
         if not result:
@@ -378,8 +431,8 @@ def open_case():
             "status": "ok", 
             "case_id": result[0],
             "case_name": result[1],
-            "item_id": data['item_id'],
-            "item_name": data['item_name']
+            "item_id": data.get('item_id'),
+            "item_name": data.get('item_name')
         })
     
     except Exception as e:
@@ -393,7 +446,13 @@ def open_case():
 # ============================================
 @app.route('/api/item/update_status', methods=['POST'])
 def update_item_status():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -407,7 +466,7 @@ def update_item_status():
             SET status_item = %s
             WHERE unique_id = %s AND user_id = %s
             RETURNING item_id, item_name
-        """, (data['status'], data['unique_id'], user_id))
+        """, (data.get('status'), data.get('unique_id'), user_id))
         
         result = cursor.fetchone()
         if not result:
@@ -419,7 +478,7 @@ def update_item_status():
             "status": "ok",
             "item_id": result[0],
             "item_name": result[1],
-            "new_status": data['status']
+            "new_status": data.get('status')
         })
     
     except Exception as e:
@@ -433,7 +492,13 @@ def update_item_status():
 # ============================================
 @app.route('/api/item/delete', methods=['POST'])
 def delete_item():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -446,7 +511,7 @@ def delete_item():
             DELETE FROM inventory 
             WHERE unique_id = %s AND user_id = %s
             RETURNING item_id, item_name
-        """, (data['unique_id'], user_id))
+        """, (data.get('unique_id'), user_id))
         
         result = cursor.fetchone()
         if not result:
@@ -467,7 +532,13 @@ def delete_item():
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -485,7 +556,7 @@ def start_search():
             INSERT INTO search_queue (user_id, mode, rank_value, age, steam_link, faceit_link)
             VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
-        """, (user_id, data['mode'], data['rank'], data['age'], data['steam_link'], data.get('faceit_link')))
+        """, (user_id, data.get('mode'), data.get('rank'), data.get('age'), data.get('steam_link'), data.get('faceit_link')))
         
         conn.commit()
         return jsonify({"status": "searching"})
@@ -501,7 +572,13 @@ def start_search():
 # ============================================
 @app.route('/api/search/stop', methods=['POST'])
 def stop_search():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -526,7 +603,13 @@ def stop_search():
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -556,17 +639,20 @@ def check_match():
             """, (other_id,))
             other_data = cursor.fetchone()
             
-            return jsonify({
-                "match_found": True,
-                "match_id": match[0],
-                "opponent": {
-                    "age": other_data[0],
-                    "mode": other_data[1],
-                    "rank": other_data[2],
-                    "steam_link": other_data[3],
-                    "faceit_link": other_data[4]
-                }
-            })
+            if other_data:
+                return jsonify({
+                    "match_found": True,
+                    "match_id": match[0],
+                    "opponent": {
+                        "age": other_data[0],
+                        "mode": other_data[1],
+                        "rank": other_data[2],
+                        "steam_link": other_data[3],
+                        "faceit_link": other_data[4]
+                    }
+                })
+            else:
+                return jsonify({"match_found": False})
         else:
             return jsonify({"match_found": False})
     
@@ -581,7 +667,13 @@ def check_match():
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
+    if not request.json:
+        return jsonify({"error": "No JSON data"}), 400
+    
     data = request.json
+    if 'telegram_id' not in data:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
     conn = get_db()
     cursor = conn.cursor()
     
