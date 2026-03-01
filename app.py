@@ -775,7 +775,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ)
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -966,7 +966,7 @@ def start_search():
                 best_candidate_raw = candidate
         
         if best_match:
-            logger.info(f"✅ Найден лучший кандидат с score={best_score}")
+            logger.info(f"Найден лучший кандидат с score={best_score}")
             
             # Создаем match с player_id
             cursor.execute("""
@@ -986,25 +986,31 @@ def start_search():
             
             conn.commit()
             
-            # Получаем ник для оппонента
-            cursor.execute("SELECT nick FROM profiles WHERE player_id = %s", (best_match['player_id'],))
-            opponent_nick = cursor.fetchone()
-            opponent_nick = opponent_nick[0] if opponent_nick else "Player"
+            # Получаем ник и другие данные для оппонента
+            cursor.execute("""
+                SELECT nick, age, steam_link, faceit_link, comment
+                FROM profiles WHERE player_id = %s
+            """, (best_match['player_id'],))
+            opponent_profile = cursor.fetchone()
             
             # Данные оппонента
             opponent_data = {
                 "player_id": best_match['player_id'],
-                "nick": opponent_nick,
+                "nick": opponent_profile[0] if opponent_profile else "Player",
                 "age": best_match['age'],
                 "style": best_match['style'],
-                "rating": best_match['rank']
+                "rating": best_match['rank'],
+                "steam_link": opponent_profile[2] if opponent_profile and opponent_profile[2] else "Не указана",
+                "faceit_link": opponent_profile[3] if opponent_profile and opponent_profile[3] else "Не указана",
+                "comment": opponent_profile[4] if opponent_profile and opponent_profile[4] else "Нет комментария"
             }
             
             return jsonify({
                 "status": "match_found",
                 "match_id": match_id,
                 "score": best_score,
-                "opponent": opponent_data
+                "opponent": opponent_data,
+                "expires_at": (datetime.now() + timedelta(seconds=30)).isoformat()
             })
         
         conn.commit()
@@ -1071,7 +1077,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# ПРОВЕРИТЬ МЭТЧ - ИСПРАВЛЕНО!
+# ПРОВЕРИТЬ МЭТЧ
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -1113,7 +1119,7 @@ def check_match():
         logger.info(f"Результат поиска мэтча для {player_id}: {match}")
         
         if match:
-            logger.info(f"✅ Найден мэтч ID={match[0]}")
+            logger.info(f"Найден мэтч ID={match[0]}")
             
             # Определяем оппонента (используем правильные индексы)
             other_id = None
@@ -1134,7 +1140,7 @@ def check_match():
             
             # Получаем данные оппонента
             cursor.execute("""
-                SELECT p.nick, p.age
+                SELECT p.nick, p.age, p.steam_link, p.faceit_link, p.comment
                 FROM profiles p
                 WHERE p.player_id = %s
             """, (other_id,))
@@ -1152,7 +1158,10 @@ def check_match():
                         "nick": opponent[0],
                         "age": opponent[1],
                         "style": "fan",  # заглушка
-                        "rating": str(match[6])  # compatibility_score
+                        "rating": str(match[6]),  # compatibility_score
+                        "steam_link": opponent[2] if opponent[2] else "Не указана",
+                        "faceit_link": opponent[3] if opponent[3] else "Не указана",
+                        "comment": opponent[4] if opponent[4] else "Нет комментария"
                     },
                     "your_response": player_response,
                     "expires_at": match[9].isoformat() if match[9] else None
@@ -1176,7 +1185,7 @@ def check_match():
             conn.close()
 
 # ============================================
-# ОТВЕТИТЬ НА МЭТЧ - ИСПРАВЛЕНО!
+# ОТВЕТИТЬ НА МЭТЧ - ДОБАВЛЕН TIMEOUT
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
@@ -1223,6 +1232,14 @@ def respond_match():
         
         logger.debug(f"Найден мэтч: {match}")
         
+        # Если это timeout (не нажали кнопку)
+        if data['response'] == 'timeout':
+            # Просто помечаем как expired
+            cursor.execute("UPDATE matches SET status = 'expired' WHERE id = %s", (data['match_id'],))
+            conn.commit()
+            logger.info(f"Мэтч {data['match_id']} закрыт по таймауту")
+            return jsonify({"status": "timeout", "message": "Время вышло"})
+        
         # Обновляем ответ игрока
         if match[3] == player_id:  # player1_id
             if match[10] is not None:  # player1_response
@@ -1257,7 +1274,7 @@ def respond_match():
                 cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", 
                              (data['match_id'],))
                 conn.commit()
-                logger.info("✅ Мэтч принят обоими")
+                logger.info("Мэтч принят обоими")
                 
                 return jsonify({
                     "status": "accepted", 
@@ -1269,7 +1286,7 @@ def respond_match():
                 cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", 
                              (data['match_id'],))
                 conn.commit()
-                logger.info("❌ Мэтч отклонен")
+                logger.info("Мэтч отклонен")
                 return jsonify({"status": "rejected", "both_accepted": False})
         else:
             # Ждем ответа второго
@@ -1280,7 +1297,7 @@ def respond_match():
             if responses[2]:
                 time_left = max(0, int((responses[2] - datetime.now()).total_seconds()))
             
-            logger.info(f"⏳ Ожидание ответа, осталось {time_left} сек")
+            logger.info(f"Ожидание ответа, осталось {time_left} сек")
             return jsonify({
                 "status": "waiting", 
                 "both_accepted": False,
