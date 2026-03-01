@@ -1067,9 +1067,6 @@ def stop_search():
 # ============================================
 # ПРОВЕРИТЬ МЭТЧ
 # ============================================
-# ============================================
-# ПРОВЕРИТЬ МЭТЧ
-# ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
     logger.info("POST /api/match/check")
@@ -1127,6 +1124,13 @@ def check_match():
             if opponent:
                 logger.debug(f"Данные оппонента: nick={opponent[0]}, age={opponent[1]}")
                 
+                # Проверяем, ответил ли уже этот игрок
+                player_response = None
+                if match[1] == player_id:
+                    player_response = match[5]  # player1_response
+                else:
+                    player_response = match[6]  # player2_response
+                
                 # Формируем ответ
                 response_data = {
                     "match_found": True,
@@ -1135,10 +1139,11 @@ def check_match():
                         "player_id": other_id,
                         "nick": opponent[0],
                         "age": opponent[1],
-                        "style": match[5] if len(match) > 5 else "fan",  # style из search_queue
-                        "rating": match[4] if len(match) > 4 else "0"    # rank из search_queue
+                        "style": "fan",  # можно добавить стиль из search_queue если нужно
+                        "rating": match[4]  # compatibility_score
                     },
-                    "score": match[4]  # compatibility_score
+                    "your_response": player_response,
+                    "expires_at": match[8].isoformat() if match[8] else None
                 }
                 logger.info(f"Отправляем данные: {response_data}")
                 return jsonify(response_data)
@@ -1157,6 +1162,7 @@ def check_match():
             cursor.close()
         if conn:
             conn.close()
+
 
 # ============================================
 # ОТВЕТИТЬ НА МЭТЧ
@@ -1189,6 +1195,7 @@ def respond_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
+        # Получаем матч
         cursor.execute("SELECT * FROM matches WHERE id = %s", (data['match_id'],))
         match = cursor.fetchone()
         
@@ -1196,13 +1203,29 @@ def respond_match():
             logger.error(f"Match not found: {data['match_id']}")
             return jsonify({"error": "Match not found"}), 404
         
+        # Проверяем не истекло ли время
+        if match[8] and datetime.now() > match[8]:
+            logger.warning(f"Match {data['match_id']} expired")
+            cursor.execute("UPDATE matches SET status = 'expired' WHERE id = %s", (data['match_id'],))
+            conn.commit()
+            return jsonify({"status": "expired", "message": "Время истекло"})
+        
         logger.debug(f"Найден мэтч: {match}")
         
+        # Обновляем ответ игрока
         if match[1] == player_id:
+            if match[5] is not None:  # уже ответил
+                logger.warning(f"Player {player_id} already responded with {match[5]}")
+                return jsonify({"status": "already_responded", "your_response": match[5]})
+            
             cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player1")
         elif match[2] == player_id:
+            if match[6] is not None:
+                logger.warning(f"Player {player_id} already responded with {match[6]}")
+                return jsonify({"status": "already_responded", "your_response": match[6]})
+            
             cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player2")
@@ -1210,33 +1233,95 @@ def respond_match():
             logger.error("User not in this match")
             return jsonify({"error": "User not in this match"}), 403
         
-        cursor.execute("SELECT player1_response, player2_response FROM matches WHERE id = %s", 
+        # Проверяем ответы
+        cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", 
                       (data['match_id'],))
         responses = cursor.fetchone()
         logger.debug(f"Ответы: {responses}")
         
-        if responses[0] == 'accept' and responses[1] == 'accept':
-            cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", 
-                         (data['match_id'],))
-            conn.commit()
-            logger.info("Мэтч принят обоими")
-            return jsonify({"status": "accepted", "both_accepted": True})
-        
-        elif responses[0] == 'reject' or responses[1] == 'reject':
-            cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", 
-                         (data['match_id'],))
-            conn.commit()
-            logger.info("Мэтч отклонен")
-            return jsonify({"status": "rejected", "both_accepted": False})
+        # Если оба ответили
+        if responses[0] is not None and responses[1] is not None:
+            if responses[0] == 'accept' and responses[1] == 'accept':
+                # Оба приняли
+                cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", 
+                             (data['match_id'],))
+                conn.commit()
+                logger.info("✅ Мэтч принят обоими")
+                
+                return jsonify({
+                    "status": "accepted", 
+                    "both_accepted": True,
+                    "match_id": data['match_id']
+                })
+            else:
+                # Кто-то отклонил
+                cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", 
+                             (data['match_id'],))
+                conn.commit()
+                logger.info("❌ Мэтч отклонен")
+                return jsonify({"status": "rejected", "both_accepted": False})
         else:
+            # Ждем ответа второго
             conn.commit()
-            logger.info("Ожидание ответа")
-            return jsonify({"status": "waiting", "both_accepted": False})
+            
+            # Проверяем сколько времени осталось
+            time_left = 30
+            if responses[2]:
+                time_left = max(0, int((responses[2] - datetime.now()).total_seconds()))
+            
+            logger.info(f"⏳ Ожидание ответа, осталось {time_left} сек")
+            return jsonify({
+                "status": "waiting", 
+                "both_accepted": False,
+                "time_left": time_left
+            })
     
     except Exception as e:
         logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ============================================
+# ПРОВЕРИТЬ ПРОСРОЧЕННЫЕ МЭТЧИ
+# ============================================
+@app.route('/api/match/cleanup', methods=['POST'])
+def cleanup_matches():
+    logger.info("POST /api/match/cleanup")
+    
+    conn = None
+    cursor = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Находим просроченные pending матчи
+        cursor.execute("""
+            UPDATE matches 
+            SET status = 'expired' 
+            WHERE status = 'pending' 
+            AND expires_at < NOW()
+            RETURNING id, player1_id, player2_id
+        """)
+        
+        expired = cursor.fetchall()
+        conn.commit()
+        
+        logger.info(f"Очищено просроченных мэтчей: {len(expired)}")
+        
+        return jsonify({
+            "status": "ok", 
+            "cleaned": len(expired)
+        })
+    
+    except Exception as e:
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
@@ -1382,6 +1467,7 @@ if __name__ == '__main__':
     print("   - /api/search/stop")
     print("   - /api/match/check")
     print("   - /api/match/respond")
+    print("   - /api/match/cleanup")
     print("   - /api/game/create")
     print("   - /api/game/vote")
     print("\nАлгоритм поиска активен!")
