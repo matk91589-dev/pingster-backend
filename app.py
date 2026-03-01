@@ -945,8 +945,13 @@ def start_search():
                 'joined_at': candidate[13]
             }
             
-            # Время ожидания кандидата
-            wait_time = (datetime.now() - candidate_data['joined_at']).total_seconds()
+            # Считаем время ожидания кандидата (в секундах)
+            if candidate_data['joined_at'] is None:
+                wait_time = 0
+                logger.debug(f"У кандидата {candidate_data['user_id']} нет joined_at, ставлю 0")
+            else:
+                wait_time = (datetime.now() - candidate_data['joined_at']).total_seconds()
+                logger.debug(f"Кандидат ждет {wait_time:.1f} секунд")
             
             # Лимит рейтинга по времени
             if wait_time < 5:
