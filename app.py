@@ -814,7 +814,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ)
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО!
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -837,13 +837,16 @@ def start_search():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Получаем user_id
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        # Получаем user_id и player_id
+        cursor.execute("SELECT id, player_id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+        user = cursor.fetchone()
+        if not user:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
-        logger.debug(f"Найден user_id: {user_id}")
+        user_id = user[0]
+        player_id = user[1]  # 👈 ПОЛУЧАЕМ PLAYER_ID
+        logger.debug(f"Найден user_id: {user_id}, player_id: {player_id}")
         
         # Удаляем старые записи в очереди
         cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
@@ -855,9 +858,9 @@ def start_search():
         # Базовые поля для всех режимов
         base_query = """
             INSERT INTO search_queue 
-            (user_id, mode, rating_value, style, age, steam_link, faceit_link,
+            (user_id, player_id, mode, rating_value, style, age, steam_link, faceit_link,
              faceit_elo, premier_rating, prime_rank, public_rank, joined_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
             RETURNING id
         """
         
@@ -865,34 +868,35 @@ def start_search():
         if mode == 'faceit':
             rating_value = data.get('rating_value', 0)
             values = (
-                user_id, mode, rating_value, data.get('style'), data.get('age'),
+                user_id, player_id, mode, rating_value, data.get('style'), data.get('age'),
                 data.get('steam_link'), data.get('faceit_link'),
                 rating_value, 0, None, None
             )
         elif mode == 'premier':
             rating_value = data.get('rating_value', 0)
             values = (
-                user_id, mode, 0, data.get('style'), data.get('age'),  # rating_value = 0 для premier
+                user_id, player_id, mode, 0, data.get('style'), data.get('age'),
                 data.get('steam_link'), data.get('faceit_link'),
-                0, rating_value, None, None  # premier_rating = rating_value
+                0, rating_value, None, None
             )
-        else:  # prime или public
+        elif mode == 'prime':
             rank_value = data.get('rating_value', 'Silver 1')
             rating_value = RANK_TO_VALUE.get(rank_value, 1000)
-            
-            if mode == 'prime':
-                values = (
-                    user_id, mode, rating_value, data.get('style'), data.get('age'),
-                    data.get('steam_link'), data.get('faceit_link'),
-                    0, 0, rank_value, None
-                )
-            else:  # public
-                values = (
-                    user_id, mode, rating_value, data.get('style'), data.get('age'),
-                    data.get('steam_link'), data.get('faceit_link'),
-                    0, 0, None, rank_value
-                )
+            values = (
+                user_id, player_id, mode, rating_value, data.get('style'), data.get('age'),
+                data.get('steam_link'), data.get('faceit_link'),
+                0, 0, rank_value, None
+            )
+        else:  # public
+            rank_value = data.get('rating_value', 'Silver 1')
+            rating_value = RANK_TO_VALUE.get(rank_value, 1000)
+            values = (
+                user_id, player_id, mode, rating_value, data.get('style'), data.get('age'),
+                data.get('steam_link'), data.get('faceit_link'),
+                0, 0, None, rank_value
+            )
         
+        logger.debug(f"Вставляем значения: {values}")
         cursor.execute(base_query, values)
         queue_id = cursor.fetchone()[0]
         conn.commit()
@@ -919,10 +923,11 @@ def start_search():
         current = {
             'id': queue_id,
             'user_id': user_id,
+            'player_id': player_id,
             'mode': mode,
-            'rating_value': values[2],
-            'style': values[3],
-            'age': values[4],
+            'rating_value': values[3],  # rating_value на 3-й позиции
+            'style': values[4],
+            'age': values[5],
             'joined_at': datetime.now()
         }
         
@@ -934,11 +939,12 @@ def start_search():
             candidate_data = {
                 'id': candidate[0],
                 'user_id': candidate[1],
-                'mode': candidate[2],
-                'rating_value': candidate[3],
-                'style': candidate[4],
-                'age': candidate[5],
-                'joined_at': candidate[12]
+                'player_id': candidate[2],
+                'mode': candidate[3],
+                'rating_value': candidate[4],
+                'style': candidate[5],
+                'age': candidate[6],
+                'joined_at': candidate[13]
             }
             
             # Считаем время ожидания кандидата (в секундах)
@@ -1002,6 +1008,7 @@ def start_search():
             # Получаем данные оппонента для ответа
             opponent_data = {
                 "user_id": best_match['user_id'],
+                "player_id": best_match['player_id'],
                 "age": best_match['age'],
                 "style": best_match['style'],
                 "rating": best_match['rating_value']
