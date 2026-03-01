@@ -1071,7 +1071,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# ПРОВЕРИТЬ МЭТЧ
+# ПРОВЕРИТЬ МЭТЧ - ИСПРАВЛЕНО!
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -1115,9 +1115,22 @@ def check_match():
         if match:
             logger.info(f"✅ Найден мэтч ID={match[0]}")
             
-            # Определяем оппонента
-            other_id = match[1] if match[1] != player_id else match[2]
+            # Определяем оппонента (используем правильные индексы)
+            other_id = None
+            player_response = None
+            
+            if match[3] == player_id:  # player1_id
+                other_id = match[4]     # player2_id
+                player_response = match[10]  # player1_response
+            elif match[4] == player_id:  # player2_id
+                other_id = match[3]       # player1_id
+                player_response = match[11]  # player2_response
+            
             logger.debug(f"ID оппонента: {other_id}")
+            
+            if not other_id:
+                logger.error("Не удалось определить оппонента")
+                return jsonify({"match_found": False})
             
             # Получаем данные оппонента
             cursor.execute("""
@@ -1130,16 +1143,6 @@ def check_match():
             if opponent:
                 logger.debug(f"Данные оппонента: nick={opponent[0]}, age={opponent[1]}")
                 
-                # Проверяем, ответил ли уже этот игрок
-                player_response = None
-                if match[1] == player_id:
-                    player_response = match[5]  # player1_response
-                else:
-                    player_response = match[6]  # player2_response
-                
-                # Получаем данные о ранге и стиле из search_queue (если нужно)
-                # Пока используем заглушки
-                
                 # Формируем ответ
                 response_data = {
                     "match_found": True,
@@ -1149,10 +1152,10 @@ def check_match():
                         "nick": opponent[0],
                         "age": opponent[1],
                         "style": "fan",  # заглушка
-                        "rating": str(match[4])  # compatibility_score как строка
+                        "rating": str(match[6])  # compatibility_score
                     },
                     "your_response": player_response,
-                    "expires_at": match[8].isoformat() if match[8] else None
+                    "expires_at": match[9].isoformat() if match[9] else None
                 }
                 logger.info(f"Отправляем данные: {response_data}")
                 return jsonify(response_data)
@@ -1173,7 +1176,7 @@ def check_match():
             conn.close()
 
 # ============================================
-# ОТВЕТИТЬ НА МЭТЧ
+# ОТВЕТИТЬ НА МЭТЧ - ИСПРАВЛЕНО!
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
@@ -1211,8 +1214,8 @@ def respond_match():
             logger.error(f"Match not found: {data['match_id']}")
             return jsonify({"error": "Match not found"}), 404
         
-        # Проверяем не истекло ли время
-        if match[8] and datetime.now() > match[8]:
+        # Проверяем не истекло ли время (expires_at на индексе 9)
+        if match[9] and datetime.now() > match[9]:
             logger.warning(f"Match {data['match_id']} expired")
             cursor.execute("UPDATE matches SET status = 'expired' WHERE id = %s", (data['match_id'],))
             conn.commit()
@@ -1221,18 +1224,18 @@ def respond_match():
         logger.debug(f"Найден мэтч: {match}")
         
         # Обновляем ответ игрока
-        if match[1] == player_id:
-            if match[5] is not None:  # уже ответил
-                logger.warning(f"Player {player_id} already responded with {match[5]}")
-                return jsonify({"status": "already_responded", "your_response": match[5]})
+        if match[3] == player_id:  # player1_id
+            if match[10] is not None:  # player1_response
+                logger.warning(f"Player {player_id} already responded with {match[10]}")
+                return jsonify({"status": "already_responded", "your_response": match[10]})
             
             cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player1")
-        elif match[2] == player_id:
-            if match[6] is not None:
-                logger.warning(f"Player {player_id} already responded with {match[6]}")
-                return jsonify({"status": "already_responded", "your_response": match[6]})
+        elif match[4] == player_id:  # player2_id
+            if match[11] is not None:  # player2_response
+                logger.warning(f"Player {player_id} already responded with {match[11]}")
+                return jsonify({"status": "already_responded", "your_response": match[11]})
             
             cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
