@@ -813,7 +813,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - УПРОЩЕННАЯ ВЕРСИЯ
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -859,7 +859,6 @@ def start_search():
         
         # Преобразуем в число для faceit/premier
         rating_number = 0
-        rank_display = None
         
         if mode in ['faceit', 'premier']:
             try:
@@ -867,19 +866,19 @@ def start_search():
             except:
                 rating_number = 0
         else:
-            rank_display = rank_value
             rating_number = RANK_TO_VALUE.get(rank_value, 1000)
         
-        # Упрощенная таблица - одно поле rank
+        # ИСПРАВЛЕНО: используем правильное имя поля 'rank' вместо 'rank_value'
         base_query = """
             INSERT INTO search_queue 
-            (user_id, player_id, mode, rank_value, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
+            (user_id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
             RETURNING id
         """
         
+        # rank как строка (в базе поле rank - varchar)
         values = (
-            user_id, player_id, mode, rating_number, 
+            user_id, player_id, mode, str(rating_number), 
             data.get('style'), data.get('age'),
             data.get('steam_link'), data.get('faceit_link'),
             data.get('comment')
@@ -914,7 +913,7 @@ def start_search():
             'user_id': user_id,
             'player_id': player_id,
             'mode': mode,
-            'rank_value': rating_number,
+            'rank': str(rating_number),  # ИСПРАВЛЕНО: rank вместо rank_value
             'style': data.get('style'),
             'age': data.get('age'),
             'joined_at': current_time
@@ -925,13 +924,13 @@ def start_search():
         best_candidate_raw = None
         
         for candidate in candidates:
-            # candidate: id, user_id, player_id, mode, rank_value, style, age, steam_link, faceit_link, comment, joined_at, expires_at
+            # candidate: id, user_id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at
             candidate_data = {
                 'id': candidate[0],
                 'user_id': candidate[1],
                 'player_id': candidate[2],
                 'mode': candidate[3],
-                'rank_value': candidate[4],
+                'rank': candidate[4],  # ИСПРАВЛЕНО: rank вместо rank_value
                 'style': candidate[5],
                 'age': candidate[6],
                 'joined_at': candidate[10]  # joined_at на 10-й позиции
@@ -956,8 +955,17 @@ def start_search():
             else:
                 max_rating_diff = RATING_LIMITS[999]
             
+            # Преобразуем rank в число для сравнения
+            try:
+                current_rank_val = int(current['rank'])
+                candidate_rank_val = int(candidate_data['rank'])
+            except:
+                # Если не получается преобразовать, используем 0
+                current_rank_val = 0
+                candidate_rank_val = 0
+            
             # Разница рейтинга
-            rating_diff = abs(current['rank_value'] - candidate_data['rank_value'])
+            rating_diff = abs(current_rank_val - candidate_rank_val)
             if rating_diff > max_rating_diff:
                 logger.debug(f"Кандидат не подходит по рейтингу: разница {rating_diff} > {max_rating_diff}")
                 continue
@@ -1008,7 +1016,7 @@ def start_search():
                 "player_id": best_match['player_id'],
                 "age": best_match['age'],
                 "style": best_match['style'],
-                "rating": best_match['rank_value']
+                "rating": best_match['rank']
             }
             
             return jsonify({
