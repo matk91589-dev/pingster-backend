@@ -813,7 +813,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ)
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - УПРОЩЕННАЯ ВЕРСИЯ
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -854,46 +854,36 @@ def start_search():
         # Определяем режим
         mode = data.get('mode', '').lower()
         
-        # Базовые поля для всех режимов
+        # Получаем значение ранга
+        rank_value = data.get('rating_value', '0')
+        
+        # Преобразуем в число для faceit/premier
+        rating_number = 0
+        rank_display = None
+        
+        if mode in ['faceit', 'premier']:
+            try:
+                rating_number = int(rank_value)
+            except:
+                rating_number = 0
+        else:
+            rank_display = rank_value
+            rating_number = RANK_TO_VALUE.get(rank_value, 1000)
+        
+        # Упрощенная таблица - одно поле rank
         base_query = """
             INSERT INTO search_queue 
-            (user_id, player_id, mode, rating_value, style, age, steam_link, faceit_link,
-             faceit_elo, premier_rating, prime_rank, public_rank, joined_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
+            (user_id, player_id, mode, rank_value, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
             RETURNING id
         """
         
-        # Подготавливаем значения
-        if mode == 'faceit':
-            rating_value = data.get('rating_value', 0)
-            values = (
-                user_id, player_id, mode, rating_value, data.get('style'), data.get('age'),
-                data.get('steam_link'), data.get('faceit_link'),
-                rating_value, 0, None, None
-            )
-        elif mode == 'premier':
-            rating_value = data.get('rating_value', 0)
-            values = (
-                user_id, player_id, mode, 0, data.get('style'), data.get('age'),
-                data.get('steam_link'), data.get('faceit_link'),
-                0, rating_value, None, None
-            )
-        elif mode == 'prime':
-            rank_value = data.get('rating_value', 'Silver 1')
-            rating_value = RANK_TO_VALUE.get(rank_value, 1000)
-            values = (
-                user_id, player_id, mode, rating_value, data.get('style'), data.get('age'),
-                data.get('steam_link'), data.get('faceit_link'),
-                0, 0, rank_value, None
-            )
-        else:
-            rank_value = data.get('rating_value', 'Silver 1')
-            rating_value = RANK_TO_VALUE.get(rank_value, 1000)
-            values = (
-                user_id, player_id, mode, rating_value, data.get('style'), data.get('age'),
-                data.get('steam_link'), data.get('faceit_link'),
-                0, 0, None, rank_value
-            )
+        values = (
+            user_id, player_id, mode, rating_number, 
+            data.get('style'), data.get('age'),
+            data.get('steam_link'), data.get('faceit_link'),
+            data.get('comment')
+        )
         
         logger.debug(f"Вставляем значения: {values}")
         cursor.execute(base_query, values)
@@ -901,7 +891,7 @@ def start_search():
         conn.commit()
         logger.info(f"Добавлен в очередь с ID: {queue_id}")
         
-        # Поиск кандидатов
+        # Поиск кандидатов - берем всех в том же режиме, кроме себя
         cursor.execute("""
             SELECT * FROM search_queue 
             WHERE mode = %s 
@@ -918,40 +908,43 @@ def start_search():
             return jsonify({"status": "searching", "message": "В очереди"})
         
         # Параметры текущего игрока
+        current_time = datetime.now()
         current = {
             'id': queue_id,
             'user_id': user_id,
             'player_id': player_id,
             'mode': mode,
-            'rating_value': values[3],
-            'style': values[4],
-            'age': values[5],
-            'joined_at': datetime.now()
+            'rank_value': rating_number,
+            'style': data.get('style'),
+            'age': data.get('age'),
+            'joined_at': current_time
         }
         
         best_match = None
         best_score = float('inf')
-        best_candidate_data = None
+        best_candidate_raw = None
         
         for candidate in candidates:
+            # candidate: id, user_id, player_id, mode, rank_value, style, age, steam_link, faceit_link, comment, joined_at, expires_at
             candidate_data = {
                 'id': candidate[0],
                 'user_id': candidate[1],
                 'player_id': candidate[2],
                 'mode': candidate[3],
-                'rating_value': candidate[4],
+                'rank_value': candidate[4],
                 'style': candidate[5],
                 'age': candidate[6],
-                'joined_at': candidate[13]
+                'joined_at': candidate[10]  # joined_at на 10-й позиции
             }
             
-            # Считаем время ожидания кандидата (в секундах)
+            # Проверяем joined_at
             if candidate_data['joined_at'] is None:
-                wait_time = 0
-                logger.debug(f"У кандидата {candidate_data['user_id']} нет joined_at, ставлю 0")
-            else:
-                wait_time = (datetime.now() - candidate_data['joined_at']).total_seconds()
-                logger.debug(f"Кандидат ждет {wait_time:.1f} секунд")
+                logger.debug(f"У кандидата {candidate_data['user_id']} нет joined_at, пропускаем")
+                continue
+            
+            # Считаем время ожидания кандидата
+            wait_time = (current_time - candidate_data['joined_at']).total_seconds()
+            logger.debug(f"Кандидат ждет {wait_time:.1f} секунд")
             
             # Лимит рейтинга по времени
             if wait_time < 5:
@@ -964,8 +957,9 @@ def start_search():
                 max_rating_diff = RATING_LIMITS[999]
             
             # Разница рейтинга
-            rating_diff = abs(current['rating_value'] - candidate_data['rating_value'])
+            rating_diff = abs(current['rank_value'] - candidate_data['rank_value'])
             if rating_diff > max_rating_diff:
+                logger.debug(f"Кандидат не подходит по рейтингу: разница {rating_diff} > {max_rating_diff}")
                 continue
             
             # Разница возраста
@@ -986,7 +980,7 @@ def start_search():
             if score < best_score:
                 best_score = score
                 best_match = candidate_data
-                best_candidate_data = candidate
+                best_candidate_raw = candidate
         
         if best_match:
             logger.info(f"Найден лучший кандидат с score={best_score}")
@@ -1014,12 +1008,8 @@ def start_search():
                 "player_id": best_match['player_id'],
                 "age": best_match['age'],
                 "style": best_match['style'],
-                "rating": best_match['rating_value']
+                "rating": best_match['rank_value']
             }
-            
-            if mode in ['prime', 'public']:
-                rank_field = 'prime_rank' if mode == 'prime' else 'public_rank'
-                opponent_data['rank'] = best_candidate_data[10] if mode == 'prime' else best_candidate_data[11]
             
             return jsonify({
                 "status": "match_found",
