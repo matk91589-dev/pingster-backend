@@ -813,7 +813,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО С ЛОГАМИ
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -890,6 +890,14 @@ def start_search():
         conn.commit()
         logger.info(f"Добавлен в очередь с ID: {queue_id}")
         
+        # Проверяем сколько кандидатов в очереди ДО нас
+        cursor.execute("""
+            SELECT COUNT(*) FROM search_queue 
+            WHERE mode = %s AND id != %s
+        """, (mode, queue_id))
+        count_before = cursor.fetchone()[0]
+        logger.info(f"В очереди до нас: {count_before} игроков")
+        
         # Поиск кандидатов - берем всех в том же режиме, кроме себя
         cursor.execute("""
             SELECT * FROM search_queue 
@@ -913,28 +921,32 @@ def start_search():
             'user_id': user_id,
             'player_id': player_id,
             'mode': mode,
-            'rank': str(rating_number),  # ИСПРАВЛЕНО: rank вместо rank_value
+            'rank': str(rating_number),
             'style': data.get('style'),
             'age': data.get('age'),
             'joined_at': current_time
         }
         
+        logger.info(f"Текущий игрок: user_id={user_id}, rank={rating_number}, style={current['style']}, age={current['age']}")
+        
         best_match = None
         best_score = float('inf')
         best_candidate_raw = None
         
-        for candidate in candidates:
+        for idx, candidate in enumerate(candidates):
             # candidate: id, user_id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at
             candidate_data = {
                 'id': candidate[0],
                 'user_id': candidate[1],
                 'player_id': candidate[2],
                 'mode': candidate[3],
-                'rank': candidate[4],  # ИСПРАВЛЕНО: rank вместо rank_value
+                'rank': candidate[4],
                 'style': candidate[5],
                 'age': candidate[6],
-                'joined_at': candidate[10]  # joined_at на 10-й позиции
+                'joined_at': candidate[10]
             }
+            
+            logger.info(f"Кандидат {idx+1}: user_id={candidate_data['user_id']}, rank={candidate_data['rank']}, style={candidate_data['style']}, age={candidate_data['age']}")
             
             # Проверяем joined_at
             if candidate_data['joined_at'] is None:
@@ -955,6 +967,8 @@ def start_search():
             else:
                 max_rating_diff = RATING_LIMITS[999]
             
+            logger.debug(f"Максимальная разница рейтинга: {max_rating_diff}")
+            
             # Преобразуем rank в число для сравнения
             try:
                 current_rank_val = int(current['rank'])
@@ -963,35 +977,41 @@ def start_search():
                 # Если не получается преобразовать, используем 0
                 current_rank_val = 0
                 candidate_rank_val = 0
+                logger.debug(f"Ошибка преобразования rank, используем 0")
             
             # Разница рейтинга
             rating_diff = abs(current_rank_val - candidate_rank_val)
+            logger.debug(f"Разница рейтинга: {rating_diff}")
+            
             if rating_diff > max_rating_diff:
                 logger.debug(f"Кандидат не подходит по рейтингу: разница {rating_diff} > {max_rating_diff}")
                 continue
             
             # Разница возраста
             age_diff = abs(current['age'] - candidate_data['age'])
+            logger.debug(f"Разница возраста: {age_diff}")
             
             # Штраф за стиль
             style_penalty = 0
             if current['style'] != candidate_data['style']:
                 style_penalty = STYLE_PENALTY.get(mode, 100)
+                logger.debug(f"Штраф за стиль: {style_penalty}")
             
             # Считаем score
             age_weight = AGE_WEIGHT.get(mode, 250)
             score = (age_weight * age_diff) + rating_diff + style_penalty
             
-            logger.debug(f"Кандидат {candidate_data['user_id']}: score={score}, "
+            logger.info(f"Кандидат {candidate_data['user_id']}: score={score}, "
                         f"rating_diff={rating_diff}, age_diff={age_diff}, style_penalty={style_penalty}")
             
             if score < best_score:
+                logger.debug(f"Новый лучший кандидат! Предыдущий score={best_score}, новый={score}")
                 best_score = score
                 best_match = candidate_data
                 best_candidate_raw = candidate
         
         if best_match:
-            logger.info(f"Найден лучший кандидат с score={best_score}")
+            logger.info(f"✅ Найден лучший кандидат с score={best_score}")
             
             # Создаем match
             cursor.execute("""
@@ -1002,13 +1022,14 @@ def start_search():
             """, (user_id, best_match['user_id'], mode, best_score))
             
             match_id = cursor.fetchone()[0]
+            logger.info(f"Создан match ID: {match_id}")
             
             # Удаляем обоих из очереди
             cursor.execute("DELETE FROM search_queue WHERE user_id IN (%s, %s)", 
                          (user_id, best_match['user_id']))
+            logger.info(f"Удалены из очереди user_id: {user_id} и {best_match['user_id']}")
             
             conn.commit()
-            logger.info(f"Создан match ID: {match_id}")
             
             # Данные оппонента
             opponent_data = {
