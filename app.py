@@ -775,7 +775,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ТОЛЬКО player_id
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -986,9 +986,15 @@ def start_search():
             
             conn.commit()
             
+            # Получаем ник для оппонента
+            cursor.execute("SELECT nick FROM profiles WHERE player_id = %s", (best_match['player_id'],))
+            opponent_nick = cursor.fetchone()
+            opponent_nick = opponent_nick[0] if opponent_nick else "Player"
+            
             # Данные оппонента
             opponent_data = {
                 "player_id": best_match['player_id'],
+                "nick": opponent_nick,
                 "age": best_match['age'],
                 "style": best_match['style'],
                 "rating": best_match['rank']
@@ -1131,6 +1137,9 @@ def check_match():
                 else:
                     player_response = match[6]  # player2_response
                 
+                # Получаем данные о ранге и стиле из search_queue (если нужно)
+                # Пока используем заглушки
+                
                 # Формируем ответ
                 response_data = {
                     "match_found": True,
@@ -1139,8 +1148,8 @@ def check_match():
                         "player_id": other_id,
                         "nick": opponent[0],
                         "age": opponent[1],
-                        "style": "fan",  # можно добавить стиль из search_queue если нужно
-                        "rating": match[4]  # compatibility_score
+                        "style": "fan",  # заглушка
+                        "rating": str(match[4])  # compatibility_score как строка
                     },
                     "your_response": player_response,
                     "expires_at": match[8].isoformat() if match[8] else None
@@ -1162,7 +1171,6 @@ def check_match():
             cursor.close()
         if conn:
             conn.close()
-
 
 # ============================================
 # ОТВЕТИТЬ НА МЭТЧ
@@ -1286,7 +1294,6 @@ def respond_match():
             cursor.close()
         if conn:
             conn.close()
-
 
 # ============================================
 # ПРОВЕРИТЬ ПРОСРОЧЕННЫЕ МЭТЧИ
