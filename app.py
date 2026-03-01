@@ -1067,6 +1067,9 @@ def stop_search():
 # ============================================
 # ПРОВЕРИТЬ МЭТЧ
 # ============================================
+# ============================================
+# ПРОВЕРИТЬ МЭТЧ
+# ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
     logger.info("POST /api/match/check")
@@ -1095,6 +1098,7 @@ def check_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
+        # Ищем активный мэтч
         cursor.execute("""
             SELECT * FROM matches 
             WHERE (player1_id = %s OR player2_id = %s) 
@@ -1103,11 +1107,16 @@ def check_match():
         """, (player_id, player_id))
         
         match = cursor.fetchone()
+        logger.info(f"Результат поиска мэтча для {player_id}: {match}")
         
         if match:
-            logger.debug(f"Найден мэтч: {match}")
-            other_id = match[1] if match[1] != player_id else match[2]
+            logger.info(f"✅ Найден мэтч ID={match[0]}")
             
+            # Определяем оппонента
+            other_id = match[1] if match[1] != player_id else match[2]
+            logger.debug(f"ID оппонента: {other_id}")
+            
+            # Получаем данные оппонента
             cursor.execute("""
                 SELECT p.nick, p.age
                 FROM profiles p
@@ -1116,25 +1125,32 @@ def check_match():
             opponent = cursor.fetchone()
             
             if opponent:
-                logger.debug(f"Данные оппонента: {opponent}")
-                return jsonify({
+                logger.debug(f"Данные оппонента: nick={opponent[0]}, age={opponent[1]}")
+                
+                # Формируем ответ
+                response_data = {
                     "match_found": True,
                     "match_id": match[0],
                     "opponent": {
                         "player_id": other_id,
                         "nick": opponent[0],
-                        "age": opponent[1]
-                    }
-                })
+                        "age": opponent[1],
+                        "style": match[5] if len(match) > 5 else "fan",  # style из search_queue
+                        "rating": match[4] if len(match) > 4 else "0"    # rank из search_queue
+                    },
+                    "score": match[4]  # compatibility_score
+                }
+                logger.info(f"Отправляем данные: {response_data}")
+                return jsonify(response_data)
             else:
-                logger.debug("Данные оппонента не найдены")
+                logger.error(f"Профиль оппонента {other_id} не найден")
                 return jsonify({"match_found": False})
         else:
             logger.debug("Мэтч не найден")
             return jsonify({"match_found": False})
     
     except Exception as e:
-        logger.error(f"ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА в check_match: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
