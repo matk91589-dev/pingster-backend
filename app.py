@@ -121,7 +121,7 @@ def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
 # ============================================
-# ИНИЦИАЛИЗАЦИЯ ПОЛЬЗОВАТЕЛЯ
+# ИНИЦИАЛИЗАЦИЯ ПОЛЬЗОВАТЕЛЯ (ИСПРАВЛЕНО!)
 # ============================================
 @app.route('/api/user/init', methods=['POST'])
 def init_user():
@@ -162,13 +162,13 @@ def init_user():
             new_id, player_id = cursor.fetchone()
             logger.info(f"✅ Создан пользователь с ID: {new_id}, player_id: {player_id}")
             
-            # Создаём профиль с ником и 1000 монет, используя player_id
+            # ИСПРАВЛЕНО: добавили telegram_id в профиль
             nick = generate_random_nick()
             logger.debug(f"Создание профиля для player_id: {player_id}, nick: {nick}")
             cursor.execute("""
-                INSERT INTO profiles (player_id, nick, pingcoins)
-                VALUES (%s, %s, 1000)
-            """, (player_id, nick))
+                INSERT INTO profiles (player_id, nick, pingcoins, telegram_id)
+                VALUES (%s, %s, 1000, %s)
+            """, (player_id, nick, data['telegram_id']))
             logger.info("✅ Профиль создан")
             
             conn.commit()
@@ -201,12 +201,12 @@ def init_user():
             
             if not profile:
                 logger.warning(f"Профиль не найден для player_id: {player_id}, создаем новый")
-                # Если профиля нет — создаём
+                # ИСПРАВЛЕНО: добавили telegram_id
                 nick = generate_random_nick()
                 cursor.execute("""
-                    INSERT INTO profiles (player_id, nick, pingcoins)
-                    VALUES (%s, %s, 1000)
-                """, (player_id, nick))
+                    INSERT INTO profiles (player_id, nick, pingcoins, telegram_id)
+                    VALUES (%s, %s, 1000, %s)
+                """, (player_id, nick, data['telegram_id']))
                 conn.commit()
                 logger.info(f"✅ Создан недостающий профиль для player_id={player_id}")
                 
@@ -244,7 +244,7 @@ def init_user():
         logger.debug("🔚 Завершение запроса")
 
 # ============================================
-# ПОЛУЧИТЬ ПРОФИЛЬ (ИСПРАВЛЕНО)
+# ПОЛУЧИТЬ ПРОФИЛЬ
 # ============================================
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
@@ -273,7 +273,6 @@ def get_profile():
         cursor = conn.cursor()
         
         logger.debug(f"Получение профиля для player_id: {player_id}")
-        # ИСПРАВЛЕНО: avatar_base64 -> avatar
         cursor.execute("""
             SELECT nick, age, steam_link, faceit_link, avatar, pingcoins
             FROM profiles WHERE player_id = %s
@@ -368,7 +367,7 @@ def update_profile():
             conn.close()
 
 # ============================================
-# СОХРАНИТЬ АВАТАРКУ (ИСПРАВЛЕНО)
+# СОХРАНИТЬ АВАТАРКУ
 # ============================================
 @app.route('/api/avatar/save', methods=['POST'])
 def save_avatar():
@@ -397,7 +396,6 @@ def save_avatar():
         cursor = conn.cursor()
         
         logger.debug(f"Сохранение аватарки для player_id: {player_id}")
-        # ИСПРАВЛЕНО: avatar_base64 -> avatar
         cursor.execute("""
             UPDATE profiles SET avatar = %s WHERE player_id = %s
         """, (data.get('avatar'), player_id))
@@ -816,7 +814,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ)
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
