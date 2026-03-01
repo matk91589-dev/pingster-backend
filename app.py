@@ -46,21 +46,6 @@ def get_player_id(telegram_id):
     logger.debug("Пользователь не найден")
     return None
 
-def get_user_id(telegram_id):
-    """Получает user_id по telegram_id"""
-    logger.debug(f"Поиск user_id по telegram_id: {telegram_id}")
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM users WHERE telegram_id = %s", (telegram_id,))
-    result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    if result:
-        logger.debug(f"Найден user_id: {result[0]}")
-        return result[0]
-    logger.debug("Пользователь не найден")
-    return None
-
 def generate_player_id():
     player_id = str(random.randint(10000000, 99999999))
     logger.debug(f"Сгенерирован player_id: {player_id}")
@@ -146,21 +131,21 @@ def init_user():
         
         # Проверяем пользователя
         logger.debug(f"Поиск пользователя с telegram_id: {data['telegram_id']}")
-        cursor.execute("SELECT id, player_id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
-        user = cursor.fetchone()
-        logger.debug(f"Результат поиска: {user}")
+        cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
+        result = cursor.fetchone()
+        logger.debug(f"Результат поиска: {result}")
         
-        if not user:
+        if not result:
             logger.info("Создание нового пользователя")
             # Создаём пользователя
             player_id = generate_player_id()
             cursor.execute("""
                 INSERT INTO users (telegram_id, username, player_id, last_active, is_online)
                 VALUES (%s, %s, %s, NOW(), true)
-                RETURNING id, player_id
+                RETURNING player_id
             """, (data['telegram_id'], data.get('username', 'no_username'), player_id))
-            new_id, player_id = cursor.fetchone()
-            logger.info(f"Создан пользователь с ID: {new_id}, player_id: {player_id}")
+            player_id = cursor.fetchone()[0]
+            logger.info(f"Создан пользователь с player_id: {player_id}")
             
             # Создаём профиль
             nick = generate_random_nick()
@@ -177,21 +162,20 @@ def init_user():
             return jsonify({
                 "status": "ok", 
                 "new_user": True, 
-                "user_id": new_id, 
                 "player_id": player_id,
                 "nick": nick,
                 "pingcoins": 1000
             })
         else:
-            user_id, player_id = user
-            logger.info(f"Существующий пользователь ID: {user_id}, player_id: {player_id}")
+            player_id = result[0]
+            logger.info(f"Существующий пользователь player_id: {player_id}")
             
             # Обновляем last_active
             cursor.execute("""
                 UPDATE users SET last_active = NOW(), is_online = true
-                WHERE id = %s
-            """, (user_id,))
-            logger.debug(f"Обновлен last_active для user_id: {user_id}")
+                WHERE player_id = %s
+            """, (player_id,))
+            logger.debug(f"Обновлен last_active для player_id: {player_id}")
             
             # Проверяем, есть ли профиль
             logger.debug(f"Поиск профиля для player_id: {player_id}")
@@ -212,7 +196,6 @@ def init_user():
                 return jsonify({
                     "status": "ok", 
                     "new_user": False, 
-                    "user_id": user_id, 
                     "player_id": player_id,
                     "nick": nick,
                     "pingcoins": 1000
@@ -224,7 +207,6 @@ def init_user():
             return jsonify({
                 "status": "ok", 
                 "new_user": False, 
-                "user_id": user_id, 
                 "player_id": player_id,
                 "nick": profile[0],
                 "pingcoins": profile[1]
@@ -511,15 +493,11 @@ def buy_case():
         cursor.execute("UPDATE profiles SET pingcoins = pingcoins - %s WHERE player_id = %s", 
                       (price, player_id))
         
-        # Получаем user_id
-        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
-        user_id = cursor.fetchone()[0]
-        
-        logger.debug(f"Добавление кейса в инвентарь для user_id: {user_id}, case: {data.get('case_id')}")
+        logger.debug(f"Добавление кейса в инвентарь для player_id: {player_id}, case: {data.get('case_id')}")
         cursor.execute("""
-            INSERT INTO inventory (user_id, case_id, case_name, unique_id, status_case)
+            INSERT INTO inventory (player_id, case_id, case_name, unique_id, status_case)
             VALUES (%s, %s, %s, %s, 'new')
-        """, (user_id, data.get('case_id'), data.get('case_name'), data.get('unique_id')))
+        """, (player_id, data.get('case_id'), data.get('case_name'), data.get('unique_id')))
         
         conn.commit()
         logger.info("Покупка совершена")
@@ -571,21 +549,17 @@ def get_inventory():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Получаем user_id
-        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
-        user_id = cursor.fetchone()[0]
-        
-        logger.debug(f"Получение инвентаря для user_id: {user_id}")
+        logger.debug(f"Получение инвентаря для player_id: {player_id}")
         cursor.execute("""
             SELECT case_id, case_name, unique_id, status_case, 
                    item_id, item_name, status_item
             FROM inventory 
-            WHERE user_id = %s
+            WHERE player_id = %s
             ORDER BY 
                 CASE WHEN status_case = 'new' THEN 0 ELSE 1 END,
                 CASE WHEN status_item = 'new' THEN 0 ELSE 1 END,
                 unique_id DESC
-        """, (user_id,))
+        """, (player_id,))
         
         items = cursor.fetchall()
         logger.debug(f"Найдено предметов: {len(items)}")
@@ -642,20 +616,16 @@ def open_case():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Получаем user_id
-        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
-        user_id = cursor.fetchone()[0]
-        
-        logger.debug(f"Открытие кейса для user_id: {user_id}, unique_id: {data.get('unique_id')}")
+        logger.debug(f"Открытие кейса для player_id: {player_id}, unique_id: {data.get('unique_id')}")
         cursor.execute("""
             UPDATE inventory 
             SET status_case = 'opened',
                 item_id = %s,
                 item_name = %s,
                 status_item = 'new'
-            WHERE unique_id = %s AND user_id = %s
+            WHERE unique_id = %s AND player_id = %s
             RETURNING case_id, case_name
-        """, (data.get('item_id'), data.get('item_name'), data.get('unique_id'), user_id))
+        """, (data.get('item_id'), data.get('item_name'), data.get('unique_id'), player_id))
         
         result = cursor.fetchone()
         if not result:
@@ -713,17 +683,13 @@ def update_item_status():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Получаем user_id
-        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
-        user_id = cursor.fetchone()[0]
-        
         logger.debug(f"Обновление статуса предмета: {data.get('unique_id')} -> {data.get('status')}")
         cursor.execute("""
             UPDATE inventory 
             SET status_item = %s
-            WHERE unique_id = %s AND user_id = %s
+            WHERE unique_id = %s AND player_id = %s
             RETURNING item_id, item_name
-        """, (data.get('status'), data.get('unique_id'), user_id))
+        """, (data.get('status'), data.get('unique_id'), player_id))
         
         result = cursor.fetchone()
         if not result:
@@ -780,16 +746,12 @@ def delete_item():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Получаем user_id
-        cursor.execute("SELECT id FROM users WHERE player_id = %s", (player_id,))
-        user_id = cursor.fetchone()[0]
-        
         logger.debug(f"Удаление предмета: {data.get('unique_id')}")
         cursor.execute("""
             DELETE FROM inventory 
-            WHERE unique_id = %s AND user_id = %s
+            WHERE unique_id = %s AND player_id = %s
             RETURNING item_id, item_name
-        """, (data.get('unique_id'), user_id))
+        """, (data.get('unique_id'), player_id))
         
         result = cursor.fetchone()
         if not result:
@@ -813,7 +775,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО С ЛОГАМИ
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ТОЛЬКО player_id
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -836,19 +798,16 @@ def start_search():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Получаем user_id и player_id
-        cursor.execute("SELECT id, player_id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
-        user = cursor.fetchone()
-        if not user:
+        # Получаем player_id
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
-        user_id = user[0]
-        player_id = user[1]
-        logger.debug(f"Найден user_id: {user_id}, player_id: {player_id}")
+        logger.debug(f"Найден player_id: {player_id}")
         
         # Удаляем старые записи в очереди
-        cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
+        cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
         logger.debug("Старые записи удалены")
         
         # Определяем режим
@@ -868,17 +827,16 @@ def start_search():
         else:
             rating_number = RANK_TO_VALUE.get(rank_value, 1000)
         
-        # ИСПРАВЛЕНО: используем правильное имя поля 'rank' вместо 'rank_value'
+        # Вставляем только player_id
         base_query = """
             INSERT INTO search_queue 
-            (user_id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
+            (player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
             RETURNING id
         """
         
-        # rank как строка (в базе поле rank - varchar)
         values = (
-            user_id, player_id, mode, str(rating_number), 
+            player_id, mode, str(rating_number), 
             data.get('style'), data.get('age'),
             data.get('steam_link'), data.get('faceit_link'),
             data.get('comment')
@@ -888,13 +846,13 @@ def start_search():
         cursor.execute(base_query, values)
         queue_id = cursor.fetchone()[0]
         conn.commit()
-        logger.info(f"Добавлен в очередь с ID: {queue_id}")
+        logger.info(f"Добавлен в очередь с ID: {queue_id}, player_id: {player_id}")
         
         # Проверяем сколько кандидатов в очереди ДО нас
         cursor.execute("""
             SELECT COUNT(*) FROM search_queue 
-            WHERE mode = %s AND id != %s
-        """, (mode, queue_id))
+            WHERE mode = %s AND player_id != %s AND id != %s
+        """, (mode, player_id, queue_id))
         count_before = cursor.fetchone()[0]
         logger.info(f"В очереди до нас: {count_before} игроков")
         
@@ -902,10 +860,10 @@ def start_search():
         cursor.execute("""
             SELECT * FROM search_queue 
             WHERE mode = %s 
-            AND user_id != %s
+            AND player_id != %s
             AND id != %s
             ORDER BY joined_at ASC
-        """, (mode, user_id, queue_id))
+        """, (mode, player_id, queue_id))
         
         candidates = cursor.fetchall()
         logger.debug(f"Найдено кандидатов: {len(candidates)}")
@@ -918,7 +876,6 @@ def start_search():
         current_time = datetime.now()
         current = {
             'id': queue_id,
-            'user_id': user_id,
             'player_id': player_id,
             'mode': mode,
             'rank': str(rating_number),
@@ -927,30 +884,29 @@ def start_search():
             'joined_at': current_time
         }
         
-        logger.info(f"Текущий игрок: user_id={user_id}, rank={rating_number}, style={current['style']}, age={current['age']}")
+        logger.info(f"Текущий игрок: player_id={player_id}, rank={rating_number}, style={current['style']}, age={current['age']}")
         
         best_match = None
         best_score = float('inf')
         best_candidate_raw = None
         
         for idx, candidate in enumerate(candidates):
-            # candidate: id, user_id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at
+            # candidate: id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at
             candidate_data = {
                 'id': candidate[0],
-                'user_id': candidate[1],
-                'player_id': candidate[2],
-                'mode': candidate[3],
-                'rank': candidate[4],
-                'style': candidate[5],
-                'age': candidate[6],
-                'joined_at': candidate[10]
+                'player_id': candidate[1],
+                'mode': candidate[2],
+                'rank': candidate[3],
+                'style': candidate[4],
+                'age': candidate[5],
+                'joined_at': candidate[9]
             }
             
-            logger.info(f"Кандидат {idx+1}: user_id={candidate_data['user_id']}, rank={candidate_data['rank']}, style={candidate_data['style']}, age={candidate_data['age']}")
+            logger.info(f"Кандидат {idx+1}: player_id={candidate_data['player_id']}, rank={candidate_data['rank']}, style={candidate_data['style']}, age={candidate_data['age']}")
             
             # Проверяем joined_at
             if candidate_data['joined_at'] is None:
-                logger.debug(f"У кандидата {candidate_data['user_id']} нет joined_at, пропускаем")
+                logger.debug(f"У кандидата {candidate_data['player_id']} нет joined_at, пропускаем")
                 continue
             
             # Считаем время ожидания кандидата
@@ -974,7 +930,6 @@ def start_search():
                 current_rank_val = int(current['rank'])
                 candidate_rank_val = int(candidate_data['rank'])
             except:
-                # Если не получается преобразовать, используем 0
                 current_rank_val = 0
                 candidate_rank_val = 0
                 logger.debug(f"Ошибка преобразования rank, используем 0")
@@ -1001,7 +956,7 @@ def start_search():
             age_weight = AGE_WEIGHT.get(mode, 250)
             score = (age_weight * age_diff) + rating_diff + style_penalty
             
-            logger.info(f"Кандидат {candidate_data['user_id']}: score={score}, "
+            logger.info(f"Кандидат {candidate_data['player_id']}: score={score}, "
                         f"rating_diff={rating_diff}, age_diff={age_diff}, style_penalty={style_penalty}")
             
             if score < best_score:
@@ -1013,27 +968,26 @@ def start_search():
         if best_match:
             logger.info(f"✅ Найден лучший кандидат с score={best_score}")
             
-            # Создаем match
+            # Создаем match с player_id
             cursor.execute("""
                 INSERT INTO matches 
-                (user1_id, user2_id, mode, compatibility_score, created_at, expires_at)
+                (player1_id, player2_id, mode, compatibility_score, created_at, expires_at)
                 VALUES (%s, %s, %s, %s, NOW(), NOW() + INTERVAL '30 seconds')
                 RETURNING id
-            """, (user_id, best_match['user_id'], mode, best_score))
+            """, (player_id, best_match['player_id'], mode, best_score))
             
             match_id = cursor.fetchone()[0]
             logger.info(f"Создан match ID: {match_id}")
             
-            # Удаляем обоих из очереди
-            cursor.execute("DELETE FROM search_queue WHERE user_id IN (%s, %s)", 
-                         (user_id, best_match['user_id']))
-            logger.info(f"Удалены из очереди user_id: {user_id} и {best_match['user_id']}")
+            # Удаляем обоих из очереди по player_id
+            cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
+                         (player_id, best_match['player_id']))
+            logger.info(f"Удалены из очереди player_id: {player_id} и {best_match['player_id']}")
             
             conn.commit()
             
             # Данные оппонента
             opponent_data = {
-                "user_id": best_match['user_id'],
                 "player_id": best_match['player_id'],
                 "age": best_match['age'],
                 "style": best_match['style'],
@@ -1083,17 +1037,17 @@ def stop_search():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
         
-        logger.debug(f"Найден user_id: {user_id}")
+        logger.debug(f"Найден player_id: {player_id}")
         
-        cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
+        cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
         conn.commit()
         logger.info("Поиск остановлен")
         
@@ -1131,34 +1085,33 @@ def check_match():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
         
-        logger.debug(f"Найден user_id: {user_id}")
+        logger.debug(f"Найден player_id: {player_id}")
         
         cursor.execute("""
             SELECT * FROM matches 
-            WHERE (user1_id = %s OR user2_id = %s) 
+            WHERE (player1_id = %s OR player2_id = %s) 
             AND status = 'pending'
             ORDER BY id DESC LIMIT 1
-        """, (user_id, user_id))
+        """, (player_id, player_id))
         
         match = cursor.fetchone()
         
         if match:
             logger.debug(f"Найден мэтч: {match}")
-            other_id = match[1] if match[1] != user_id else match[2]
+            other_id = match[1] if match[1] != player_id else match[2]
             
             cursor.execute("""
-                SELECT u.telegram_id, p.nick, p.age
-                FROM users u
-                JOIN profiles p ON u.player_id = p.player_id
-                WHERE u.id = %s
+                SELECT p.nick, p.age
+                FROM profiles p
+                WHERE p.player_id = %s
             """, (other_id,))
             opponent = cursor.fetchone()
             
@@ -1168,9 +1121,9 @@ def check_match():
                     "match_found": True,
                     "match_id": match[0],
                     "opponent": {
-                        "telegram_id": opponent[0],
-                        "nick": opponent[1],
-                        "age": opponent[2]
+                        "player_id": other_id,
+                        "nick": opponent[0],
+                        "age": opponent[1]
                     }
                 })
             else:
@@ -1210,15 +1163,15 @@ def respond_match():
     conn = None
     cursor = None
     try:
-        user_id = get_user_id(data['telegram_id'])
-        if not user_id:
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
             logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
         cursor = conn.cursor()
         
-        logger.debug(f"Найден user_id: {user_id}")
+        logger.debug(f"Найден player_id: {player_id}")
         
         cursor.execute("SELECT * FROM matches WHERE id = %s", (data['match_id'],))
         match = cursor.fetchone()
@@ -1229,19 +1182,19 @@ def respond_match():
         
         logger.debug(f"Найден мэтч: {match}")
         
-        if match[1] == user_id:
-            cursor.execute("UPDATE matches SET user1_response = %s WHERE id = %s", 
+        if match[1] == player_id:
+            cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
-            logger.debug("Обновлен ответ user1")
-        elif match[2] == user_id:
-            cursor.execute("UPDATE matches SET user2_response = %s WHERE id = %s", 
+            logger.debug("Обновлен ответ player1")
+        elif match[2] == player_id:
+            cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
-            logger.debug("Обновлен ответ user2")
+            logger.debug("Обновлен ответ player2")
         else:
             logger.error("User not in this match")
             return jsonify({"error": "User not in this match"}), 403
         
-        cursor.execute("SELECT user1_response, user2_response FROM matches WHERE id = %s", 
+        cursor.execute("SELECT player1_response, player2_response FROM matches WHERE id = %s", 
                       (data['match_id'],))
         responses = cursor.fetchone()
         logger.debug(f"Ответы: {responses}")
@@ -1299,7 +1252,7 @@ def create_game():
         conn = get_db()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT user1_id, user2_id FROM matches WHERE id = %s AND status = 'accepted'", 
+        cursor.execute("SELECT player1_id, player2_id FROM matches WHERE id = %s AND status = 'accepted'", 
                       (data['match_id'],))
         match = cursor.fetchone()
         
@@ -1311,7 +1264,7 @@ def create_game():
         chat_link = f"https://t.me/+{random.randint(1000000, 9999999)}"
         
         cursor.execute("""
-            INSERT INTO games (match_id, user1_id, user2_id, telegram_chat_id, telegram_chat_link, created_at)
+            INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, created_at)
             VALUES (%s, %s, %s, %s, %s, NOW())
             RETURNING id
         """, (data['match_id'], match[0], match[1], chat_id, chat_link))
@@ -1352,9 +1305,9 @@ def vote_player():
     data = request.json
     logger.info(f"Получены данные: {data}")
     
-    if 'game_id' not in data or 'user_id' not in data or 'vote' not in data:
+    if 'game_id' not in data or 'player_id' not in data or 'vote' not in data:
         logger.error("Missing required fields")
-        return jsonify({"error": "Missing game_id, user_id or vote"}), 400
+        return jsonify({"error": "Missing game_id, player_id or vote"}), 400
     
     conn = None
     cursor = None
@@ -1362,16 +1315,16 @@ def vote_player():
         conn = get_db()
         cursor = conn.cursor()
         
-        if data['user_id'] == data['voter_id']:
+        if data['player_id'] == data['voter_id']:
             logger.error("User cannot vote for themselves")
             return jsonify({"error": "Cannot vote for yourself"}), 400
         
         cursor.execute("""
             UPDATE games 
-            SET user1_vote = CASE WHEN user1_id = %s THEN %s ELSE user1_vote END,
-                user2_vote = CASE WHEN user2_id = %s THEN %s ELSE user2_vote END,
+            SET player1_vote = CASE WHEN player1_id = %s THEN %s ELSE player1_vote END,
+                player2_vote = CASE WHEN player2_id = %s THEN %s ELSE player2_vote END,
                 completed_at = CASE 
-                    WHEN user1_vote IS NOT NULL AND user2_vote IS NOT NULL 
+                    WHEN player1_vote IS NOT NULL AND player2_vote IS NOT NULL 
                     THEN NOW() ELSE completed_at 
                 END
             WHERE id = %s
