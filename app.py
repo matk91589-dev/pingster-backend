@@ -244,7 +244,7 @@ def init_user():
         logger.debug("🔚 Завершение запроса")
 
 # ============================================
-# ПОЛУЧИТЬ ПРОФИЛЬ
+# ПОЛУЧИТЬ ПРОФИЛЬ (ИСПРАВЛЕНО)
 # ============================================
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
@@ -273,8 +273,9 @@ def get_profile():
         cursor = conn.cursor()
         
         logger.debug(f"Получение профиля для player_id: {player_id}")
+        # ИСПРАВЛЕНО: avatar_base64 -> avatar
         cursor.execute("""
-            SELECT nick, age, steam_link, faceit_link, avatar_base64, pingcoins
+            SELECT nick, age, steam_link, faceit_link, avatar, pingcoins
             FROM profiles WHERE player_id = %s
         """, (player_id,))
         profile = cursor.fetchone()
@@ -367,7 +368,7 @@ def update_profile():
             conn.close()
 
 # ============================================
-# СОХРАНИТЬ АВАТАРКУ
+# СОХРАНИТЬ АВАТАРКУ (ИСПРАВЛЕНО)
 # ============================================
 @app.route('/api/avatar/save', methods=['POST'])
 def save_avatar():
@@ -396,9 +397,10 @@ def save_avatar():
         cursor = conn.cursor()
         
         logger.debug(f"Сохранение аватарки для player_id: {player_id}")
+        # ИСПРАВЛЕНО: avatar_base64 -> avatar
         cursor.execute("""
-            UPDATE profiles SET avatar_base64 = %s WHERE player_id = %s
-        """, (data.get('avatar_base64'), player_id))
+            UPDATE profiles SET avatar = %s WHERE player_id = %s
+        """, (data.get('avatar'), player_id))
         
         conn.commit()
         logger.info("✅ Аватарка сохранена")
@@ -814,7 +816,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ)
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -849,15 +851,15 @@ def start_search():
         cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
         logger.debug("Старые записи удалены")
         
-        # Определяем режим и сохраняем данные
-        mode = data.get('mode')
+        # Определяем режим (ПРИВОДИМ К НИЖНЕМУ РЕГИСТРУ)
+        mode = data.get('mode', '').lower()
         
         # Базовые поля для всех режимов
         base_query = """
             INSERT INTO search_queue 
             (user_id, mode, rating_value, style, age, steam_link, faceit_link,
-             faceit_elo, premier_rating, prime_rank, public_rank, joined_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+             faceit_elo, premier_rating, prime_rank, public_rank, joined_at, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes')
             RETURNING id
         """
         
@@ -872,12 +874,12 @@ def start_search():
         elif mode == 'premier':
             rating_value = data.get('rating_value', 0)
             values = (
-                user_id, mode, rating_value, data.get('style'), data.get('age'),
+                user_id, mode, 0, data.get('style'), data.get('age'),  # rating_value = 0 для premier
                 data.get('steam_link'), data.get('faceit_link'),
-                0, rating_value, None, None
+                0, rating_value, None, None  # premier_rating = rating_value
             )
         else:  # prime или public
-            rank_value = data.get('rank_value', 'Silver 1')
+            rank_value = data.get('rating_value', 'Silver 1')
             rating_value = RANK_TO_VALUE.get(rank_value, 1000)
             
             if mode == 'prime':
