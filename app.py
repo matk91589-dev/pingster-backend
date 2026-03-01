@@ -121,18 +121,18 @@ def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
 # ============================================
-# ИНИЦИАЛИЗАЦИЯ ПОЛЬЗОВАТЕЛЯ (ИСПРАВЛЕНО!)
+# ИНИЦИАЛИЗАЦИЯ ПОЛЬЗОВАТЕЛЯ
 # ============================================
 @app.route('/api/user/init', methods=['POST'])
 def init_user():
-    logger.info("🔥 POST /api/user/init")
+    logger.info("POST /api/user/init")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -160,19 +160,19 @@ def init_user():
                 RETURNING id, player_id
             """, (data['telegram_id'], data.get('username', 'no_username'), player_id))
             new_id, player_id = cursor.fetchone()
-            logger.info(f"✅ Создан пользователь с ID: {new_id}, player_id: {player_id}")
+            logger.info(f"Создан пользователь с ID: {new_id}, player_id: {player_id}")
             
-            # ИСПРАВЛЕНО: добавили telegram_id в профиль
+            # Создаём профиль
             nick = generate_random_nick()
             logger.debug(f"Создание профиля для player_id: {player_id}, nick: {nick}")
             cursor.execute("""
                 INSERT INTO profiles (player_id, nick, pingcoins, telegram_id)
                 VALUES (%s, %s, 1000, %s)
             """, (player_id, nick, data['telegram_id']))
-            logger.info("✅ Профиль создан")
+            logger.info("Профиль создан")
             
             conn.commit()
-            logger.info("💾 Данные сохранены в БД")
+            logger.info("Данные сохранены в БД")
             
             return jsonify({
                 "status": "ok", 
@@ -184,7 +184,7 @@ def init_user():
             })
         else:
             user_id, player_id = user
-            logger.info(f"👤 Существующий пользователь ID: {user_id}, player_id: {player_id}")
+            logger.info(f"Существующий пользователь ID: {user_id}, player_id: {player_id}")
             
             # Обновляем last_active
             cursor.execute("""
@@ -193,7 +193,7 @@ def init_user():
             """, (user_id,))
             logger.debug(f"Обновлен last_active для user_id: {user_id}")
             
-            # Проверяем, есть ли профиль по player_id
+            # Проверяем, есть ли профиль
             logger.debug(f"Поиск профиля для player_id: {player_id}")
             cursor.execute("SELECT nick, pingcoins FROM profiles WHERE player_id = %s", (player_id,))
             profile = cursor.fetchone()
@@ -201,14 +201,13 @@ def init_user():
             
             if not profile:
                 logger.warning(f"Профиль не найден для player_id: {player_id}, создаем новый")
-                # ИСПРАВЛЕНО: добавили telegram_id
                 nick = generate_random_nick()
                 cursor.execute("""
                     INSERT INTO profiles (player_id, nick, pingcoins, telegram_id)
                     VALUES (%s, %s, 1000, %s)
                 """, (player_id, nick, data['telegram_id']))
                 conn.commit()
-                logger.info(f"✅ Создан недостающий профиль для player_id={player_id}")
+                logger.info(f"Создан недостающий профиль для player_id={player_id}")
                 
                 return jsonify({
                     "status": "ok", 
@@ -220,7 +219,7 @@ def init_user():
                 })
             
             conn.commit()
-            logger.info("💾 Данные обновлены")
+            logger.info("Данные обновлены")
             
             return jsonify({
                 "status": "ok", 
@@ -232,7 +231,7 @@ def init_user():
             })
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -241,21 +240,21 @@ def init_user():
             cursor.close()
         if conn:
             conn.close()
-        logger.debug("🔚 Завершение запроса")
+        logger.debug("Завершение запроса")
 
 # ============================================
 # ПОЛУЧИТЬ ПРОФИЛЬ
 # ============================================
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
-    logger.info("🔥 POST /api/profile/get")
+    logger.info("POST /api/profile/get")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -296,7 +295,7 @@ def get_profile():
         })
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
@@ -309,14 +308,14 @@ def get_profile():
 # ============================================
 @app.route('/api/profile/update', methods=['POST'])
 def update_profile():
-    logger.info("🔥 POST /api/profile/update")
+    logger.info("POST /api/profile/update")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -351,12 +350,12 @@ def update_profile():
         ))
         
         conn.commit()
-        logger.info("✅ Профиль обновлен")
+        logger.info("Профиль обновлен")
         
         return jsonify({"status": "ok"})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -371,14 +370,14 @@ def update_profile():
 # ============================================
 @app.route('/api/avatar/save', methods=['POST'])
 def save_avatar():
-    logger.info("🔥 POST /api/avatar/save")
+    logger.info("POST /api/avatar/save")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -401,12 +400,12 @@ def save_avatar():
         """, (data.get('avatar'), player_id))
         
         conn.commit()
-        logger.info("✅ Аватарка сохранена")
+        logger.info("Аватарка сохранена")
         
         return jsonify({"status": "ok"})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -421,14 +420,14 @@ def save_avatar():
 # ============================================
 @app.route('/api/user/balance', methods=['POST'])
 def get_balance():
-    logger.info("🔥 POST /api/user/balance")
+    logger.info("POST /api/user/balance")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -454,7 +453,7 @@ def get_balance():
         return jsonify({"status": "ok", "balance": balance})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
@@ -467,14 +466,14 @@ def get_balance():
 # ============================================
 @app.route('/api/shop/buy', methods=['POST'])
 def buy_case():
-    logger.info("🔥 POST /api/shop/buy")
+    logger.info("POST /api/shop/buy")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -523,7 +522,7 @@ def buy_case():
         """, (user_id, data.get('case_id'), data.get('case_name'), data.get('unique_id')))
         
         conn.commit()
-        logger.info("✅ Покупка совершена")
+        logger.info("Покупка совершена")
         
         # Получаем новый баланс
         cursor.execute("SELECT pingcoins FROM profiles WHERE player_id = %s", (player_id,))
@@ -533,7 +532,7 @@ def buy_case():
         return jsonify({"status": "ok", "new_balance": new_balance})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -548,14 +547,14 @@ def buy_case():
 # ============================================
 @app.route('/api/inventory/get', methods=['POST'])
 def get_inventory():
-    logger.info("🔥 POST /api/inventory/get")
+    logger.info("POST /api/inventory/get")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -606,7 +605,7 @@ def get_inventory():
         return jsonify({"status": "ok", "inventory": inventory_list})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
@@ -619,14 +618,14 @@ def get_inventory():
 # ============================================
 @app.route('/api/case/open', methods=['POST'])
 def open_case():
-    logger.info("🔥 POST /api/case/open")
+    logger.info("POST /api/case/open")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -664,7 +663,7 @@ def open_case():
             return jsonify({"error": "Case not found"}), 404
         
         conn.commit()
-        logger.info("✅ Кейс открыт")
+        logger.info("Кейс открыт")
         
         return jsonify({
             "status": "ok", 
@@ -675,7 +674,7 @@ def open_case():
         })
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -690,14 +689,14 @@ def open_case():
 # ============================================
 @app.route('/api/item/update_status', methods=['POST'])
 def update_item_status():
-    logger.info("🔥 POST /api/item/update_status")
+    logger.info("POST /api/item/update_status")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -732,7 +731,7 @@ def update_item_status():
             return jsonify({"error": "Item not found"}), 404
         
         conn.commit()
-        logger.info("✅ Статус обновлен")
+        logger.info("Статус обновлен")
         
         return jsonify({
             "status": "ok",
@@ -742,7 +741,7 @@ def update_item_status():
         })
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -757,14 +756,14 @@ def update_item_status():
 # ============================================
 @app.route('/api/item/delete', methods=['POST'])
 def delete_item():
-    logger.info("🔥 POST /api/item/delete")
+    logger.info("POST /api/item/delete")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -798,12 +797,12 @@ def delete_item():
             return jsonify({"error": "Item not found"}), 404
         
         conn.commit()
-        logger.info("✅ Предмет удален")
+        logger.info("Предмет удален")
         
         return jsonify({"status": "ok", "deleted": result[0]})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -814,18 +813,18 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕНО!
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ)
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
-    logger.info("🔥 POST /api/search/start")
+    logger.info("POST /api/search/start")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -845,14 +844,14 @@ def start_search():
             return jsonify({"error": "User not found"}), 404
         
         user_id = user[0]
-        player_id = user[1]  # 👈 ПОЛУЧАЕМ PLAYER_ID
+        player_id = user[1]
         logger.debug(f"Найден user_id: {user_id}, player_id: {player_id}")
         
         # Удаляем старые записи в очереди
         cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
         logger.debug("Старые записи удалены")
         
-        # Определяем режим (ПРИВОДИМ К НИЖНЕМУ РЕГИСТРУ)
+        # Определяем режим
         mode = data.get('mode', '').lower()
         
         # Базовые поля для всех режимов
@@ -864,7 +863,7 @@ def start_search():
             RETURNING id
         """
         
-        # Подготавливаем значения в зависимости от режима
+        # Подготавливаем значения
         if mode == 'faceit':
             rating_value = data.get('rating_value', 0)
             values = (
@@ -887,7 +886,7 @@ def start_search():
                 data.get('steam_link'), data.get('faceit_link'),
                 0, 0, rank_value, None
             )
-        else:  # public
+        else:
             rank_value = data.get('rating_value', 'Silver 1')
             rating_value = RANK_TO_VALUE.get(rank_value, 1000)
             values = (
@@ -900,10 +899,9 @@ def start_search():
         cursor.execute(base_query, values)
         queue_id = cursor.fetchone()[0]
         conn.commit()
-        logger.info(f"✅ Добавлен в очередь с ID: {queue_id}")
+        logger.info(f"Добавлен в очередь с ID: {queue_id}")
         
-        # ===== АЛГОРИТМ ПОИСКА =====
-        # Ищем подходящего кандидата в очереди (кроме себя)
+        # Поиск кандидатов
         cursor.execute("""
             SELECT * FROM search_queue 
             WHERE mode = %s 
@@ -925,7 +923,7 @@ def start_search():
             'user_id': user_id,
             'player_id': player_id,
             'mode': mode,
-            'rating_value': values[3],  # rating_value на 3-й позиции
+            'rating_value': values[3],
             'style': values[4],
             'age': values[5],
             'joined_at': datetime.now()
@@ -947,10 +945,10 @@ def start_search():
                 'joined_at': candidate[13]
             }
             
-            # Считаем время ожидания кандидата (в секундах)
+            # Время ожидания кандидата
             wait_time = (datetime.now() - candidate_data['joined_at']).total_seconds()
             
-            # Определяем лимит рейтинга по времени
+            # Лимит рейтинга по времени
             if wait_time < 5:
                 max_rating_diff = RATING_LIMITS[5]
             elif wait_time < 10:
@@ -960,12 +958,12 @@ def start_search():
             else:
                 max_rating_diff = RATING_LIMITS[999]
             
-            # Проверяем разницу рейтинга
+            # Разница рейтинга
             rating_diff = abs(current['rating_value'] - candidate_data['rating_value'])
             if rating_diff > max_rating_diff:
                 continue
             
-            # Разница в возрасте
+            # Разница возраста
             age_diff = abs(current['age'] - candidate_data['age'])
             
             # Штраф за стиль
@@ -986,9 +984,9 @@ def start_search():
                 best_candidate_data = candidate
         
         if best_match:
-            logger.info(f"✅ Найден лучший кандидат с score={best_score}")
+            logger.info(f"Найден лучший кандидат с score={best_score}")
             
-            # Создаем запись в matches
+            # Создаем match
             cursor.execute("""
                 INSERT INTO matches 
                 (user1_id, user2_id, mode, compatibility_score, created_at, expires_at)
@@ -1003,9 +1001,9 @@ def start_search():
                          (user_id, best_match['user_id']))
             
             conn.commit()
-            logger.info(f"✅ Создан match ID: {match_id}")
+            logger.info(f"Создан match ID: {match_id}")
             
-            # Получаем данные оппонента для ответа
+            # Данные оппонента
             opponent_data = {
                 "user_id": best_match['user_id'],
                 "player_id": best_match['player_id'],
@@ -1014,7 +1012,6 @@ def start_search():
                 "rating": best_match['rating_value']
             }
             
-            # Если есть rank_value (для prime/public), добавляем
             if mode in ['prime', 'public']:
                 rank_field = 'prime_rank' if mode == 'prime' else 'public_rank'
                 opponent_data['rank'] = best_candidate_data[10] if mode == 'prime' else best_candidate_data[11]
@@ -1027,11 +1024,11 @@ def start_search():
             })
         
         conn.commit()
-        logger.info("⏳ Кандидатов нет, ждем...")
+        logger.info("Кандидатов нет, ждем...")
         return jsonify({"status": "searching", "message": "В очереди"})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1046,14 +1043,14 @@ def start_search():
 # ============================================
 @app.route('/api/search/stop', methods=['POST'])
 def stop_search():
-    logger.info("🔥 POST /api/search/stop")
+    logger.info("POST /api/search/stop")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -1074,12 +1071,12 @@ def stop_search():
         
         cursor.execute("DELETE FROM search_queue WHERE user_id = %s", (user_id,))
         conn.commit()
-        logger.info("✅ Поиск остановлен")
+        logger.info("Поиск остановлен")
         
         return jsonify({"status": "stopped"})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1094,14 +1091,14 @@ def stop_search():
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
-    logger.info("🔥 POST /api/match/check")
+    logger.info("POST /api/match/check")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data:
         logger.error("Missing telegram_id")
@@ -1120,7 +1117,6 @@ def check_match():
         
         logger.debug(f"Найден user_id: {user_id}")
         
-        # Ищем активный матч
         cursor.execute("""
             SELECT * FROM matches 
             WHERE (user1_id = %s OR user2_id = %s) 
@@ -1134,7 +1130,6 @@ def check_match():
             logger.debug(f"Найден мэтч: {match}")
             other_id = match[1] if match[1] != user_id else match[2]
             
-            # Получаем данные оппонента из profiles
             cursor.execute("""
                 SELECT u.telegram_id, p.nick, p.age
                 FROM users u
@@ -1162,7 +1157,7 @@ def check_match():
             return jsonify({"match_found": False})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
@@ -1175,14 +1170,14 @@ def check_match():
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
-    logger.info("🔥 POST /api/match/respond")
+    logger.info("POST /api/match/respond")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'telegram_id' not in data or 'match_id' not in data or 'response' not in data:
         logger.error("Missing required fields")
@@ -1201,7 +1196,6 @@ def respond_match():
         
         logger.debug(f"Найден user_id: {user_id}")
         
-        # Получаем матч
         cursor.execute("SELECT * FROM matches WHERE id = %s", (data['match_id'],))
         match = cursor.fetchone()
         
@@ -1211,7 +1205,6 @@ def respond_match():
         
         logger.debug(f"Найден мэтч: {match}")
         
-        # Проверяем, что пользователь участвует в матче
         if match[1] == user_id:
             cursor.execute("UPDATE matches SET user1_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
@@ -1224,35 +1217,31 @@ def respond_match():
             logger.error("User not in this match")
             return jsonify({"error": "User not in this match"}), 403
         
-        # Проверяем ответы
         cursor.execute("SELECT user1_response, user2_response FROM matches WHERE id = %s", 
                       (data['match_id'],))
         responses = cursor.fetchone()
         logger.debug(f"Ответы: {responses}")
         
         if responses[0] == 'accept' and responses[1] == 'accept':
-            # Оба приняли
             cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", 
                          (data['match_id'],))
             conn.commit()
-            logger.info("✅ Мэтч принят обоими")
+            logger.info("Мэтч принят обоими")
             return jsonify({"status": "accepted", "both_accepted": True})
         
         elif responses[0] == 'reject' or responses[1] == 'reject':
-            # Кто-то отклонил
             cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", 
                          (data['match_id'],))
             conn.commit()
-            logger.info("❌ Мэтч отклонен")
+            logger.info("Мэтч отклонен")
             return jsonify({"status": "rejected", "both_accepted": False})
         else:
-            # Ждем ответа
             conn.commit()
-            logger.info("⏳ Ожидание ответа")
+            logger.info("Ожидание ответа")
             return jsonify({"status": "waiting", "both_accepted": False})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1263,18 +1252,18 @@ def respond_match():
             conn.close()
 
 # ============================================
-# СОЗДАТЬ ИГРУ (ЧАТ В TELEGRAM)
+# СОЗДАТЬ ИГРУ
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
-    logger.info("🔥 POST /api/game/create")
+    logger.info("POST /api/game/create")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'match_id' not in data:
         logger.error("Missing match_id")
@@ -1286,7 +1275,6 @@ def create_game():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Получаем данные матча
         cursor.execute("SELECT user1_id, user2_id FROM matches WHERE id = %s AND status = 'accepted'", 
                       (data['match_id'],))
         match = cursor.fetchone()
@@ -1295,12 +1283,9 @@ def create_game():
             logger.error(f"Match not found or not accepted: {data['match_id']}")
             return jsonify({"error": "Match not found or not accepted"}), 404
         
-        # TODO: Здесь будет создание чата в Telegram через бота
-        # Пока заглушка
         chat_id = random.randint(1000000, 9999999)
         chat_link = f"https://t.me/+{random.randint(1000000, 9999999)}"
         
-        # Создаем запись в games
         cursor.execute("""
             INSERT INTO games (match_id, user1_id, user2_id, telegram_chat_id, telegram_chat_link, created_at)
             VALUES (%s, %s, %s, %s, %s, NOW())
@@ -1309,7 +1294,7 @@ def create_game():
         
         game_id = cursor.fetchone()[0]
         conn.commit()
-        logger.info(f"✅ Создана игра ID: {game_id}, чат: {chat_link}")
+        logger.info(f"Создана игра ID: {game_id}, чат: {chat_link}")
         
         return jsonify({
             "status": "ok",
@@ -1319,7 +1304,7 @@ def create_game():
         })
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1334,14 +1319,14 @@ def create_game():
 # ============================================
 @app.route('/api/game/vote', methods=['POST'])
 def vote_player():
-    logger.info("🔥 POST /api/game/vote")
+    logger.info("POST /api/game/vote")
     
     if not request.json:
         logger.error("No JSON data")
         return jsonify({"error": "No JSON data"}), 400
     
     data = request.json
-    logger.info(f"📦 Получены данные: {data}")
+    logger.info(f"Получены данные: {data}")
     
     if 'game_id' not in data or 'user_id' not in data or 'vote' not in data:
         logger.error("Missing required fields")
@@ -1353,9 +1338,7 @@ def vote_player():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Определяем, кто голосует и за кого
         if data['user_id'] == data['voter_id']:
-            # Голосует за себя? Так нельзя
             logger.error("User cannot vote for themselves")
             return jsonify({"error": "Cannot vote for yourself"}), 400
         
@@ -1371,12 +1354,12 @@ def vote_player():
         """, (data['voter_id'], data['vote'], data['voter_id'], data['vote'], data['game_id']))
         
         conn.commit()
-        logger.info(f"✅ Голос записан")
+        logger.info("Голос записан")
         
         return jsonify({"status": "ok"})
     
     except Exception as e:
-        logger.error(f"❌ ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1390,8 +1373,8 @@ def vote_player():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("🚀 Pingster backend запускается...")
-    print("✅ Эндпоинты:")
+    print("Pingster backend запускается...")
+    print("Эндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
     print("   - /api/profile/update")
@@ -1408,9 +1391,9 @@ if __name__ == '__main__':
     print("   - /api/match/respond")
     print("   - /api/game/create")
     print("   - /api/game/vote")
-    print("\n🔥 Алгоритм поиска активен!")
+    print("\nАлгоритм поиска активен!")
     print("   - Веса возраста: faceit=100, premier=750, prime/public=250")
     print("   - Штрафы за стиль: faceit=100, premier=500, prime=300, public=100")
     print("   - Лимиты рейтинга: 5с=200, 10с=400, 15с=800, 15+с=2000")
-    print("\n🚀 Сервер запущен на порту 5000")
+    print("\nСервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
