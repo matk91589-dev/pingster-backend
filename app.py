@@ -775,7 +775,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ)
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -806,10 +806,6 @@ def start_search():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Удаляем старые записи в очереди
-        cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
-        logger.debug("Старые записи удалены")
-        
         # Определяем режим
         mode = data.get('mode', '').lower()
         
@@ -827,7 +823,52 @@ def start_search():
         else:
             rating_number = RANK_TO_VALUE.get(rank_value, 1000)
         
-        # Вставляем только player_id
+        # ===== ОПТИМИЗИРОВАННАЯ ЛОГИКА =====
+        # 1. Удаляем только просроченные записи этого игрока
+        cursor.execute("""
+            DELETE FROM search_queue 
+            WHERE player_id = %s AND expires_at < NOW()
+        """, (player_id,))
+        deleted_expired = cursor.rowcount
+        logger.debug(f"Удалено просроченных записей: {deleted_expired}")
+        
+        # 2. Проверяем, есть ли уже активный поиск с такими же параметрами
+        cursor.execute("""
+            SELECT id, mode, style, rank, age FROM search_queue 
+            WHERE player_id = %s 
+            AND mode = %s 
+            AND style = %s
+            AND expires_at > NOW()
+            ORDER BY joined_at DESC
+            LIMIT 1
+        """, (player_id, mode, data.get('style')))
+        
+        existing = cursor.fetchone()
+        
+        if existing:
+            logger.info(f"Найден активный поиск с ID: {existing[0]}")
+            
+            # Проверяем, изменились ли параметры
+            if str(existing[3]) == str(rating_number) and existing[4] == data.get('age'):
+                # Параметры не изменились - возвращаем существующий поиск
+                logger.info("Параметры не изменились, используем существующий поиск")
+                
+                # Продлеваем время
+                cursor.execute("""
+                    UPDATE search_queue 
+                    SET expires_at = NOW() + INTERVAL '5 minutes'
+                    WHERE id = %s
+                """, (existing[0],))
+                conn.commit()
+                
+                # Проверяем кандидатов (оставляем ту же логику поиска)
+                return check_candidates(cursor, player_id, mode, data, rating_number, existing[0], conn)
+            else:
+                # Параметры изменились - удаляем старый и создадим новый
+                logger.info("Параметры изменились, создаем новый поиск")
+                cursor.execute("DELETE FROM search_queue WHERE id = %s", (existing[0],))
+        
+        # 3. Создаем новую запись в очереди
         base_query = """
             INSERT INTO search_queue 
             (player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
@@ -848,174 +889,8 @@ def start_search():
         conn.commit()
         logger.info(f"Добавлен в очередь с ID: {queue_id}, player_id: {player_id}")
         
-        # Проверяем сколько кандидатов в очереди ДО нас
-        cursor.execute("""
-            SELECT COUNT(*) FROM search_queue 
-            WHERE mode = %s AND player_id != %s AND id != %s
-        """, (mode, player_id, queue_id))
-        count_before = cursor.fetchone()[0]
-        logger.info(f"В очереди до нас: {count_before} игроков")
-        
-        # Поиск кандидатов - берем всех в том же режиме, кроме себя
-        cursor.execute("""
-            SELECT * FROM search_queue 
-            WHERE mode = %s 
-            AND player_id != %s
-            AND id != %s
-            ORDER BY joined_at ASC
-        """, (mode, player_id, queue_id))
-        
-        candidates = cursor.fetchall()
-        logger.debug(f"Найдено кандидатов: {len(candidates)}")
-        
-        if not candidates:
-            logger.info("Нет кандидатов, ждем...")
-            return jsonify({"status": "searching", "message": "В очереди"})
-        
-        # Параметры текущего игрока
-        current_time = datetime.now()
-        current = {
-            'id': queue_id,
-            'player_id': player_id,
-            'mode': mode,
-            'rank': str(rating_number),
-            'style': data.get('style'),
-            'age': data.get('age'),
-            'joined_at': current_time
-        }
-        
-        logger.info(f"Текущий игрок: player_id={player_id}, rank={rating_number}, style={current['style']}, age={current['age']}")
-        
-        best_match = None
-        best_score = float('inf')
-        best_candidate_raw = None
-        
-        for idx, candidate in enumerate(candidates):
-            # candidate: id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at
-            candidate_data = {
-                'id': candidate[0],
-                'player_id': candidate[1],
-                'mode': candidate[2],
-                'rank': candidate[3],
-                'style': candidate[4],
-                'age': candidate[5],
-                'joined_at': candidate[9]
-            }
-            
-            logger.info(f"Кандидат {idx+1}: player_id={candidate_data['player_id']}, rank={candidate_data['rank']}, style={candidate_data['style']}, age={candidate_data['age']}")
-            
-            # Проверяем joined_at
-            if candidate_data['joined_at'] is None:
-                logger.debug(f"У кандидата {candidate_data['player_id']} нет joined_at, пропускаем")
-                continue
-            
-            # Считаем время ожидания кандидата
-            wait_time = (current_time - candidate_data['joined_at']).total_seconds()
-            logger.debug(f"Кандидат ждет {wait_time:.1f} секунд")
-            
-            # Лимит рейтинга по времени
-            if wait_time < 5:
-                max_rating_diff = RATING_LIMITS[5]
-            elif wait_time < 10:
-                max_rating_diff = RATING_LIMITS[10]
-            elif wait_time < 15:
-                max_rating_diff = RATING_LIMITS[15]
-            else:
-                max_rating_diff = RATING_LIMITS[999]
-            
-            logger.debug(f"Максимальная разница рейтинга: {max_rating_diff}")
-            
-            # Преобразуем rank в число для сравнения
-            try:
-                current_rank_val = int(current['rank'])
-                candidate_rank_val = int(candidate_data['rank'])
-            except:
-                current_rank_val = 0
-                candidate_rank_val = 0
-                logger.debug(f"Ошибка преобразования rank, используем 0")
-            
-            # Разница рейтинга
-            rating_diff = abs(current_rank_val - candidate_rank_val)
-            logger.debug(f"Разница рейтинга: {rating_diff}")
-            
-            if rating_diff > max_rating_diff:
-                logger.debug(f"Кандидат не подходит по рейтингу: разница {rating_diff} > {max_rating_diff}")
-                continue
-            
-            # Разница возраста
-            age_diff = abs(current['age'] - candidate_data['age'])
-            logger.debug(f"Разница возраста: {age_diff}")
-            
-            # Штраф за стиль
-            style_penalty = 0
-            if current['style'] != candidate_data['style']:
-                style_penalty = STYLE_PENALTY.get(mode, 100)
-                logger.debug(f"Штраф за стиль: {style_penalty}")
-            
-            # Считаем score
-            age_weight = AGE_WEIGHT.get(mode, 250)
-            score = (age_weight * age_diff) + rating_diff + style_penalty
-            
-            logger.info(f"Кандидат {candidate_data['player_id']}: score={score}, "
-                        f"rating_diff={rating_diff}, age_diff={age_diff}, style_penalty={style_penalty}")
-            
-            if score < best_score:
-                logger.debug(f"Новый лучший кандидат! Предыдущий score={best_score}, новый={score}")
-                best_score = score
-                best_match = candidate_data
-                best_candidate_raw = candidate
-        
-        if best_match:
-            logger.info(f"Найден лучший кандидат с score={best_score}")
-            
-            # Создаем match с player_id
-            cursor.execute("""
-                INSERT INTO matches 
-                (player1_id, player2_id, mode, compatibility_score, created_at, expires_at)
-                VALUES (%s, %s, %s, %s, NOW(), NOW() + INTERVAL '30 seconds')
-                RETURNING id
-            """, (player_id, best_match['player_id'], mode, best_score))
-            
-            match_id = cursor.fetchone()[0]
-            logger.info(f"Создан match ID: {match_id}")
-            
-            # Удаляем обоих из очереди по player_id
-            cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
-                         (player_id, best_match['player_id']))
-            logger.info(f"Удалены из очереди player_id: {player_id} и {best_match['player_id']}")
-            
-            conn.commit()
-            
-            # Получаем ник и другие данные для оппонента
-            cursor.execute("""
-                SELECT nick, age, steam_link, faceit_link, comment
-                FROM profiles WHERE player_id = %s
-            """, (best_match['player_id'],))
-            opponent_profile = cursor.fetchone()
-            
-            # Данные оппонента
-            opponent_data = {
-                "player_id": best_match['player_id'],
-                "nick": opponent_profile[0] if opponent_profile else "Player",
-                "age": best_match['age'],
-                "style": best_match['style'],
-                "rating": best_match['rank'],
-                "steam_link": opponent_profile[2] if opponent_profile and opponent_profile[2] else "Не указана",
-                "faceit_link": opponent_profile[3] if opponent_profile and opponent_profile[3] else "Не указана",
-                "comment": opponent_profile[4] if opponent_profile and opponent_profile[4] else "Нет комментария"
-            }
-            
-            return jsonify({
-                "status": "match_found",
-                "match_id": match_id,
-                "score": best_score,
-                "opponent": opponent_data,
-                "expires_at": (datetime.now() + timedelta(seconds=30)).isoformat()
-            })
-        
-        conn.commit()
-        logger.info("Кандидатов нет, ждем...")
-        return jsonify({"status": "searching", "message": "В очереди"})
+        # 4. Проверяем кандидатов
+        return check_candidates(cursor, player_id, mode, data, rating_number, queue_id, conn)
     
     except Exception as e:
         logger.error(f"ОШИБКА: {e}", exc_info=True)
@@ -1027,6 +902,182 @@ def start_search():
             cursor.close()
         if conn:
             conn.close()
+
+# ============================================
+# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПОИСКА КАНДИДАТОВ
+# ============================================
+def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, conn):
+    """Проверяет кандидатов и возвращает результат поиска"""
+    
+    # Проверяем сколько кандидатов в очереди
+    cursor.execute("""
+        SELECT COUNT(*) FROM search_queue 
+        WHERE mode = %s AND player_id != %s AND id != %s AND expires_at > NOW()
+    """, (mode, player_id, queue_id))
+    count_before = cursor.fetchone()[0]
+    logger.info(f"В очереди до нас: {count_before} игроков")
+    
+    # Поиск кандидатов - берем всех активных в том же режиме, кроме себя
+    cursor.execute("""
+        SELECT * FROM search_queue 
+        WHERE mode = %s 
+        AND player_id != %s
+        AND id != %s
+        AND expires_at > NOW()
+        ORDER BY joined_at ASC
+    """, (mode, player_id, queue_id))
+    
+    candidates = cursor.fetchall()
+    logger.debug(f"Найдено кандидатов: {len(candidates)}")
+    
+    if not candidates:
+        logger.info("Нет кандидатов, ждем...")
+        return jsonify({"status": "searching", "message": "В очереди"})
+    
+    # Параметры текущего игрока
+    current_time = datetime.now()
+    current = {
+        'id': queue_id,
+        'player_id': player_id,
+        'mode': mode,
+        'rank': str(rating_number),
+        'style': data.get('style'),
+        'age': data.get('age'),
+        'joined_at': current_time
+    }
+    
+    logger.info(f"Текущий игрок: player_id={player_id}, rank={rating_number}, style={current['style']}, age={current['age']}")
+    
+    best_match = None
+    best_score = float('inf')
+    best_candidate_raw = None
+    
+    for idx, candidate in enumerate(candidates):
+        # candidate: id, player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at
+        candidate_data = {
+            'id': candidate[0],
+            'player_id': candidate[1],
+            'mode': candidate[2],
+            'rank': candidate[3],
+            'style': candidate[4],
+            'age': candidate[5],
+            'joined_at': candidate[9]
+        }
+        
+        logger.info(f"Кандидат {idx+1}: player_id={candidate_data['player_id']}, rank={candidate_data['rank']}, style={candidate_data['style']}, age={candidate_data['age']}")
+        
+        # Проверяем joined_at
+        if candidate_data['joined_at'] is None:
+            logger.debug(f"У кандидата {candidate_data['player_id']} нет joined_at, пропускаем")
+            continue
+        
+        # Считаем время ожидания кандидата
+        wait_time = (current_time - candidate_data['joined_at']).total_seconds()
+        logger.debug(f"Кандидат ждет {wait_time:.1f} секунд")
+        
+        # Лимит рейтинга по времени
+        if wait_time < 5:
+            max_rating_diff = RATING_LIMITS[5]
+        elif wait_time < 10:
+            max_rating_diff = RATING_LIMITS[10]
+        elif wait_time < 15:
+            max_rating_diff = RATING_LIMITS[15]
+        else:
+            max_rating_diff = RATING_LIMITS[999]
+        
+        logger.debug(f"Максимальная разница рейтинга: {max_rating_diff}")
+        
+        # Преобразуем rank в число для сравнения
+        try:
+            current_rank_val = int(current['rank'])
+            candidate_rank_val = int(candidate_data['rank'])
+        except:
+            current_rank_val = 0
+            candidate_rank_val = 0
+            logger.debug(f"Ошибка преобразования rank, используем 0")
+        
+        # Разница рейтинга
+        rating_diff = abs(current_rank_val - candidate_rank_val)
+        logger.debug(f"Разница рейтинга: {rating_diff}")
+        
+        if rating_diff > max_rating_diff:
+            logger.debug(f"Кандидат не подходит по рейтингу: разница {rating_diff} > {max_rating_diff}")
+            continue
+        
+        # Разница возраста
+        age_diff = abs(current['age'] - candidate_data['age'])
+        logger.debug(f"Разница возраста: {age_diff}")
+        
+        # Штраф за стиль
+        style_penalty = 0
+        if current['style'] != candidate_data['style']:
+            style_penalty = STYLE_PENALTY.get(mode, 100)
+            logger.debug(f"Штраф за стиль: {style_penalty}")
+        
+        # Считаем score
+        age_weight = AGE_WEIGHT.get(mode, 250)
+        score = (age_weight * age_diff) + rating_diff + style_penalty
+        
+        logger.info(f"Кандидат {candidate_data['player_id']}: score={score}, "
+                    f"rating_diff={rating_diff}, age_diff={age_diff}, style_penalty={style_penalty}")
+        
+        if score < best_score:
+            logger.debug(f"Новый лучший кандидат! Предыдущий score={best_score}, новый={score}")
+            best_score = score
+            best_match = candidate_data
+            best_candidate_raw = candidate
+    
+    if best_match:
+        logger.info(f"Найден лучший кандидат с score={best_score}")
+        
+        # Создаем match с player_id
+        cursor.execute("""
+            INSERT INTO matches 
+            (player1_id, player2_id, mode, compatibility_score, created_at, expires_at)
+            VALUES (%s, %s, %s, %s, NOW(), NOW() + INTERVAL '30 seconds')
+            RETURNING id
+        """, (player_id, best_match['player_id'], mode, best_score))
+        
+        match_id = cursor.fetchone()[0]
+        logger.info(f"Создан match ID: {match_id}")
+        
+        # Удаляем обоих из очереди по id (а не по player_id, чтобы удалить только этот конкретный поиск)
+        cursor.execute("DELETE FROM search_queue WHERE id IN (%s, %s)", 
+                     (queue_id, best_match['id']))
+        logger.info(f"Удалены из очереди записи с ID: {queue_id} и {best_match['id']}")
+        
+        conn.commit()
+        
+        # Получаем ник и другие данные для оппонента
+        cursor.execute("""
+            SELECT nick, age, steam_link, faceit_link, comment
+            FROM profiles WHERE player_id = %s
+        """, (best_match['player_id'],))
+        opponent_profile = cursor.fetchone()
+        
+        # Данные оппонента
+        opponent_data = {
+            "player_id": best_match['player_id'],
+            "nick": opponent_profile[0] if opponent_profile else "Player",
+            "age": best_match['age'],
+            "style": best_match['style'],
+            "rating": best_match['rank'],
+            "steam_link": opponent_profile[2] if opponent_profile and opponent_profile[2] else "Не указана",
+            "faceit_link": opponent_profile[3] if opponent_profile and opponent_profile[3] else "Не указана",
+            "comment": opponent_profile[4] if opponent_profile and opponent_profile[4] else "Нет комментария"
+        }
+        
+        return jsonify({
+            "status": "match_found",
+            "match_id": match_id,
+            "score": best_score,
+            "opponent": opponent_data,
+            "expires_at": (datetime.now() + timedelta(seconds=30)).isoformat()
+        })
+    
+    conn.commit()
+    logger.info("Кандидатов нет, ждем...")
+    return jsonify({"status": "searching", "message": "В очереди"})
 
 # ============================================
 # ОСТАНОВИТЬ ПОИСК
@@ -1059,11 +1110,13 @@ def stop_search():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
+        # Удаляем ВСЕ активные поиски этого игрока
+        cursor.execute("DELETE FROM search_queue WHERE player_id = %s AND expires_at > NOW()", (player_id,))
+        deleted = cursor.rowcount
         conn.commit()
-        logger.info("Поиск остановлен")
+        logger.info(f"Поиск остановлен, удалено записей: {deleted}")
         
-        return jsonify({"status": "stopped"})
+        return jsonify({"status": "stopped", "deleted": deleted})
     
     except Exception as e:
         logger.error(f"ОШИБКА: {e}", exc_info=True)
@@ -1357,6 +1410,45 @@ def cleanup_matches():
             conn.close()
 
 # ============================================
+# ОЧИСТИТЬ ПРОСРОЧЕННЫЕ ЗАПИСИ В ОЧЕРЕДИ
+# ============================================
+@app.route('/api/search/cleanup', methods=['POST'])
+def cleanup_search_queue():
+    logger.info("POST /api/search/cleanup")
+    
+    conn = None
+    cursor = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Удаляем просроченные записи из очереди
+        cursor.execute("""
+            DELETE FROM search_queue 
+            WHERE expires_at < NOW()
+            RETURNING id
+        """)
+        
+        deleted = cursor.rowcount
+        conn.commit()
+        
+        logger.info(f"Очищено просроченных записей в очереди: {deleted}")
+        
+        return jsonify({
+            "status": "ok", 
+            "cleaned": deleted
+        })
+    
+    except Exception as e:
+        logger.error(f"ОШИБКА: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================
 # СОЗДАТЬ ИГРУ
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
@@ -1490,8 +1582,9 @@ if __name__ == '__main__':
     print("   - /api/case/open")
     print("   - /api/item/update_status")
     print("   - /api/item/delete")
-    print("   - /api/search/start")
+    print("   - /api/search/start (оптимизированная версия)")
     print("   - /api/search/stop")
+    print("   - /api/search/cleanup")
     print("   - /api/match/check")
     print("   - /api/match/respond")
     print("   - /api/match/cleanup")
@@ -1501,5 +1594,9 @@ if __name__ == '__main__':
     print("   - Веса возраста: faceit=100, premier=750, prime/public=250")
     print("   - Штрафы за стиль: faceit=100, premier=500, prime=300, public=100")
     print("   - Лимиты рейтинга: 5с=200, 10с=400, 15с=800, 15+с=2000")
+    print("\nОптимизация очереди:")
+    print("   - Удаляются только просроченные записи")
+    print("   - Проверка на дубликаты поиска")
+    print("   - Можно иметь несколько активных поисков")
     print("\nСервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
