@@ -1171,62 +1171,72 @@ def check_match():
         match = cursor.fetchone()
         logger.info(f"Результат поиска мэтча для {player_id}: {match}")
         
-        if match:
-            logger.info(f"Найден мэтч ID={match[0]}")
-            
-            # Определяем оппонента (используем правильные индексы)
-            other_id = None
-            player_response = None
-            
-            if match[3] == player_id:  # player1_id
-                other_id = match[4]     # player2_id
-                player_response = match[10]  # player1_response
-            elif match[4] == player_id:  # player2_id
-                other_id = match[3]       # player1_id
-                player_response = match[11]  # player2_response
-            
-            logger.debug(f"ID оппонента: {other_id}")
-            
-            if not other_id:
-                logger.error("Не удалось определить оппонента")
-                return jsonify({"match_found": False})
-            
-            # Получаем данные оппонента
-            cursor.execute("""
-                SELECT p.nick, p.age, p.steam_link, p.faceit_link, p.comment
-                FROM profiles p
-                WHERE p.player_id = %s
-            """, (other_id,))
-            opponent = cursor.fetchone()
-            
-            if opponent:
-                logger.debug(f"Данные оппонента: nick={opponent[0]}, age={opponent[1]}")
-                
-                # Формируем ответ
-                response_data = {
-                    "match_found": True,
-                    "match_id": match[0],
-                    "opponent": {
-                        "player_id": other_id,
-                        "nick": opponent[0],
-                        "age": opponent[1],
-                        "style": "fan",  # заглушка
-                        "rating": str(match[6]),  # compatibility_score
-                        "steam_link": opponent[2] if opponent[2] else "Не указана",
-                        "faceit_link": opponent[3] if opponent[3] else "Не указана",
-                        "comment": opponent[4] if opponent[4] else "Нет комментария"
-                    },
-                    "your_response": player_response,
-                    "expires_at": match[9].isoformat() if match[9] else None
-                }
-                logger.info(f"Отправляем данные: {response_data}")
-                return jsonify(response_data)
-            else:
-                logger.error(f"Профиль оппонента {other_id} не найден")
-                return jsonify({"match_found": False})
-        else:
+        if not match:
             logger.debug("Мэтч не найден")
             return jsonify({"match_found": False})
+        
+        logger.info(f"Найден мэтч ID={match[0]}")
+        
+        # Определяем оппонента
+        other_id = None
+        player_response = None
+        
+        if match[3] == player_id:  # player1_id
+            other_id = match[4]     # player2_id
+            player_response = match[10]  # player1_response
+        elif match[4] == player_id:  # player2_id
+            other_id = match[3]       # player1_id
+            player_response = match[11]  # player2_response
+        
+        logger.debug(f"ID оппонента: {other_id}")
+        
+        if not other_id:
+            logger.error("Не удалось определить оппонента")
+            return jsonify({"match_found": False})
+        
+        # Получаем данные оппонента из profiles
+        cursor.execute("""
+            SELECT p.nick, p.age, p.steam_link, p.faceit_link
+            FROM profiles p
+            WHERE p.player_id = %s
+        """, (other_id,))
+        opponent = cursor.fetchone()
+        
+        if not opponent:
+            logger.error(f"Профиль оппонента {other_id} не найден")
+            return jsonify({"match_found": False})
+        
+        logger.debug(f"Данные оппонента: nick={opponent[0]}, age={opponent[1]}")
+        
+        # Получаем comment из search_queue (последний активный поиск оппонента)
+        cursor.execute("""
+            SELECT comment FROM search_queue 
+            WHERE player_id = %s AND expires_at > NOW()
+            ORDER BY joined_at DESC LIMIT 1
+        """, (other_id,))
+        comment_result = cursor.fetchone()
+        comment = comment_result[0] if comment_result else "Нет комментария"
+        
+        # Формируем ответ
+        response_data = {
+            "match_found": True,
+            "match_id": match[0],
+            "opponent": {
+                "player_id": other_id,
+                "nick": opponent[0],
+                "age": opponent[1],
+                "style": "fan",  # заглушка
+                "rating": str(match[6]),  # compatibility_score
+                "steam_link": opponent[2] if opponent[2] else "Не указана",
+                "faceit_link": opponent[3] if opponent[3] else "Не указана",
+                "comment": comment
+            },
+            "your_response": player_response,
+            "expires_at": match[9].isoformat() if match[9] else None
+        }
+        
+        logger.info(f"Отправляем данные: {response_data}")
+        return jsonify(response_data)
     
     except Exception as e:
         logger.error(f"ОШИБКА в check_match: {e}", exc_info=True)
