@@ -1030,16 +1030,19 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
     if best_match:
         logger.info(f"Найден лучший кандидат с score={best_score}")
         
+        # ИСПРАВЛЕНИЕ: создаем единое время истечения для обоих игроков
+        match_expires = datetime.now() + timedelta(seconds=30)
+        
         # Создаем match с player_id
         cursor.execute("""
             INSERT INTO matches 
             (player1_id, player2_id, mode, compatibility_score, created_at, expires_at)
-            VALUES (%s, %s, %s, %s, NOW(), NOW() + INTERVAL '30 seconds')
+            VALUES (%s, %s, %s, %s, NOW(), %s)
             RETURNING id
-        """, (player_id, best_match['player_id'], mode, best_score))
+        """, (player_id, best_match['player_id'], mode, best_score, match_expires))
         
         match_id = cursor.fetchone()[0]
-        logger.info(f"Создан match ID: {match_id}")
+        logger.info(f"Создан match ID: {match_id}, истекает: {match_expires}")
         
         # Удаляем обоих из очереди по id (а не по player_id, чтобы удалить только этот конкретный поиск)
         cursor.execute("DELETE FROM search_queue WHERE id IN (%s, %s)", 
@@ -1072,7 +1075,7 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
             "match_id": match_id,
             "score": best_score,
             "opponent": opponent_data,
-            "expires_at": (datetime.now() + timedelta(seconds=30)).isoformat()
+            "expires_at": match_expires.isoformat()  # ИСПРАВЛЕНИЕ: одинаковое время для обоих
         })
     
     conn.commit()
