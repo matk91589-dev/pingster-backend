@@ -1044,7 +1044,7 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
         match_id = cursor.fetchone()[0]
         logger.info(f"Создан match ID: {match_id}, истекает: {match_expires}")
         
-        # Удаляем обоих из очереди по id (а не по player_id, чтобы удалить только этот конкретный поиск)
+        # Удаляем обоих из очереди по id
         cursor.execute("DELETE FROM search_queue WHERE id IN (%s, %s)", 
                      (queue_id, best_match['id']))
         logger.info(f"Удалены из очереди записи с ID: {queue_id} и {best_match['id']}")
@@ -1075,7 +1075,7 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
             "match_id": match_id,
             "score": best_score,
             "opponent": opponent_data,
-            "expires_at": match_expires.isoformat()  # ИСПРАВЛЕНИЕ: одинаковое время для обоих
+            "expires_at": match_expires.isoformat()
         })
     
     conn.commit()
@@ -1113,7 +1113,6 @@ def stop_search():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Удаляем ВСЕ активные поиски этого игрока
         cursor.execute("DELETE FROM search_queue WHERE player_id = %s AND expires_at > NOW()", (player_id,))
         deleted = cursor.rowcount
         conn.commit()
@@ -1163,7 +1162,6 @@ def check_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Ищем активный мэтч
         cursor.execute("""
             SELECT * FROM matches 
             WHERE (player1_id = %s OR player2_id = %s) 
@@ -1180,16 +1178,15 @@ def check_match():
         
         logger.info(f"Найден мэтч ID={match[0]}")
         
-        # Определяем оппонента
         other_id = None
         player_response = None
         
-        if match[3] == player_id:  # player1_id
-            other_id = match[4]     # player2_id
-            player_response = match[10]  # player1_response
-        elif match[4] == player_id:  # player2_id
-            other_id = match[3]       # player1_id
-            player_response = match[11]  # player2_response
+        if match[3] == player_id:
+            other_id = match[4]
+            player_response = match[10]
+        elif match[4] == player_id:
+            other_id = match[3]
+            player_response = match[11]
         
         logger.debug(f"ID оппонента: {other_id}")
         
@@ -1197,7 +1194,6 @@ def check_match():
             logger.error("Не удалось определить оппонента")
             return jsonify({"match_found": False})
         
-        # Получаем данные оппонента из profiles
         cursor.execute("""
             SELECT p.nick, p.age, p.steam_link, p.faceit_link
             FROM profiles p
@@ -1211,7 +1207,6 @@ def check_match():
         
         logger.debug(f"Данные оппонента: nick={opponent[0]}, age={opponent[1]}")
         
-        # Получаем comment из search_queue (последний активный поиск оппонента)
         cursor.execute("""
             SELECT comment FROM search_queue 
             WHERE player_id = %s AND expires_at > NOW()
@@ -1220,7 +1215,6 @@ def check_match():
         comment_result = cursor.fetchone()
         comment = comment_result[0] if comment_result else "Нет комментария"
         
-        # Формируем ответ
         response_data = {
             "match_found": True,
             "match_id": match[0],
@@ -1228,8 +1222,8 @@ def check_match():
                 "player_id": other_id,
                 "nick": opponent[0],
                 "age": opponent[1],
-                "style": "fan",  # заглушка
-                "rating": str(match[6]),  # compatibility_score
+                "style": "fan",
+                "rating": str(match[6]),
                 "steam_link": opponent[2] if opponent[2] else "Не указана",
                 "faceit_link": opponent[3] if opponent[3] else "Не указана",
                 "comment": comment
@@ -1251,7 +1245,7 @@ def check_match():
             conn.close()
 
 # ============================================
-# ОТВЕТИТЬ НА МЭТЧ - ДОБАВЛЕН TIMEOUT
+# ОТВЕТИТЬ НА МЭТЧ - ИСПРАВЛЕННАЯ ВЕРСИЯ
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
@@ -1281,7 +1275,6 @@ def respond_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Получаем матч
         cursor.execute("SELECT * FROM matches WHERE id = %s", (data['match_id'],))
         match = cursor.fetchone()
         
@@ -1289,37 +1282,45 @@ def respond_match():
             logger.error(f"Match not found: {data['match_id']}")
             return jsonify({"error": "Match not found"}), 404
         
-        # Проверяем не истекло ли время (expires_at на индексе 9)
+        # Проверяем не истекло ли время
         if match[9] and datetime.now() > match[9]:
             logger.warning(f"Match {data['match_id']} expired")
+            
+            # Проверяем, может быть оба уже ответили до истечения?
+            if match[10] is not None and match[11] is not None:
+                logger.info("Оба ответили до истечения, обрабатываем")
+                if match[10] == 'accept' and match[11] == 'accept':
+                    cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
+                    conn.commit()
+                    return jsonify({"status": "accepted", "both_accepted": True})
+                else:
+                    cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", (data['match_id'],))
+                    conn.commit()
+                    return jsonify({"status": "rejected", "both_accepted": False})
+            
             cursor.execute("UPDATE matches SET status = 'expired' WHERE id = %s", (data['match_id'],))
             conn.commit()
             return jsonify({"status": "expired", "message": "Время истекло"})
         
         logger.debug(f"Найден мэтч: {match}")
         
-        # Если это timeout (не нажали кнопку)
         if data['response'] == 'timeout':
-            # Просто помечаем как expired
             cursor.execute("UPDATE matches SET status = 'expired' WHERE id = %s", (data['match_id'],))
             conn.commit()
             logger.info(f"Мэтч {data['match_id']} закрыт по таймауту")
             return jsonify({"status": "timeout", "message": "Время вышло"})
         
-        # Обновляем ответ игрока
-        if match[3] == player_id:  # player1_id
-            if match[10] is not None:  # player1_response
+        if match[3] == player_id:
+            if match[10] is not None:
                 logger.warning(f"Player {player_id} already responded with {match[10]}")
                 return jsonify({"status": "already_responded", "your_response": match[10]})
-            
             cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player1")
-        elif match[4] == player_id:  # player2_id
-            if match[11] is not None:  # player2_response
+        elif match[4] == player_id:
+            if match[11] is not None:
                 logger.warning(f"Player {player_id} already responded with {match[11]}")
                 return jsonify({"status": "already_responded", "your_response": match[11]})
-            
             cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s", 
                          (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player2")
@@ -1327,42 +1328,29 @@ def respond_match():
             logger.error("User not in this match")
             return jsonify({"error": "User not in this match"}), 403
         
-        # Проверяем ответы
         cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", 
                       (data['match_id'],))
         responses = cursor.fetchone()
         logger.debug(f"Ответы: {responses}")
         
-        # Если оба ответили
         if responses[0] is not None and responses[1] is not None:
             if responses[0] == 'accept' and responses[1] == 'accept':
-                # Оба приняли
                 cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", 
                              (data['match_id'],))
                 conn.commit()
                 logger.info("Мэтч принят обоими")
-                
-                return jsonify({
-                    "status": "accepted", 
-                    "both_accepted": True,
-                    "match_id": data['match_id']
-                })
+                return jsonify({"status": "accepted", "both_accepted": True})
             else:
-                # Кто-то отклонил
                 cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", 
                              (data['match_id'],))
                 conn.commit()
                 logger.info("Мэтч отклонен")
                 return jsonify({"status": "rejected", "both_accepted": False})
         else:
-            # Ждем ответа второго
             conn.commit()
-            
-            # Проверяем сколько времени осталось
             time_left = 30
             if responses[2]:
                 time_left = max(0, int((responses[2] - datetime.now()).total_seconds()))
-            
             logger.info(f"Ожидание ответа, осталось {time_left} сек")
             return jsonify({
                 "status": "waiting", 
@@ -1394,7 +1382,6 @@ def cleanup_matches():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Находим просроченные pending матчи
         cursor.execute("""
             UPDATE matches 
             SET status = 'expired' 
@@ -1435,7 +1422,6 @@ def cleanup_search_queue():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Удаляем просроченные записи из очереди
         cursor.execute("""
             DELETE FROM search_queue 
             WHERE expires_at < NOW()
@@ -1595,7 +1581,7 @@ if __name__ == '__main__':
     print("   - /api/case/open")
     print("   - /api/item/update_status")
     print("   - /api/item/delete")
-    print("   - /api/search/start (оптимизированная версия)")
+    print("   - /api/search/start")
     print("   - /api/search/stop")
     print("   - /api/search/cleanup")
     print("   - /api/match/check")
@@ -1603,13 +1589,5 @@ if __name__ == '__main__':
     print("   - /api/match/cleanup")
     print("   - /api/game/create")
     print("   - /api/game/vote")
-    print("\nАлгоритм поиска активен!")
-    print("   - Веса возраста: faceit=100, premier=750, prime/public=250")
-    print("   - Штрафы за стиль: faceit=100, premier=500, prime=300, public=100")
-    print("   - Лимиты рейтинга: 5с=200, 10с=400, 15с=800, 15+с=2000")
-    print("\nОптимизация очереди:")
-    print("   - Удаляются только просроченные записи")
-    print("   - Проверка на дубликаты поиска")
-    print("   - Можно иметь несколько активных поисков")
     print("\nСервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
