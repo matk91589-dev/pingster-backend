@@ -775,7 +775,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
+# НАЧАТЬ ПОИСК (С АЛГОРИТМОМ) - ИСПРАВЛЕННАЯ ВЕРСИЯ
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -823,52 +823,16 @@ def start_search():
         else:
             rating_number = RANK_TO_VALUE.get(rank_value, 1000)
         
-        # ===== ОПТИМИЗИРОВАННАЯ ЛОГИКА =====
-        # 1. Удаляем только просроченные записи этого игрока
+        # ===== ИСПРАВЛЕННАЯ ЛОГИКА =====
+        # 1. Удаляем ВСЕ старые записи этого игрока (не только просроченные)
         cursor.execute("""
             DELETE FROM search_queue 
-            WHERE player_id = %s AND expires_at < NOW()
+            WHERE player_id = %s
         """, (player_id,))
-        deleted_expired = cursor.rowcount
-        logger.debug(f"Удалено просроченных записей: {deleted_expired}")
+        deleted_old = cursor.rowcount
+        logger.debug(f"Удалено старых записей: {deleted_old}")
         
-        # 2. Проверяем, есть ли уже активный поиск с такими же параметрами
-        cursor.execute("""
-            SELECT id, mode, style, rank, age FROM search_queue 
-            WHERE player_id = %s 
-            AND mode = %s 
-            AND style = %s
-            AND expires_at > NOW()
-            ORDER BY joined_at DESC
-            LIMIT 1
-        """, (player_id, mode, data.get('style')))
-        
-        existing = cursor.fetchone()
-        
-        if existing:
-            logger.info(f"Найден активный поиск с ID: {existing[0]}")
-            
-            # Проверяем, изменились ли параметры
-            if str(existing[3]) == str(rating_number) and existing[4] == data.get('age'):
-                # Параметры не изменились - возвращаем существующий поиск
-                logger.info("Параметры не изменились, используем существующий поиск")
-                
-                # Продлеваем время
-                cursor.execute("""
-                    UPDATE search_queue 
-                    SET expires_at = NOW() + INTERVAL '5 minutes'
-                    WHERE id = %s
-                """, (existing[0],))
-                conn.commit()
-                
-                # Проверяем кандидатов (оставляем ту же логику поиска)
-                return check_candidates(cursor, player_id, mode, data, rating_number, existing[0], conn)
-            else:
-                # Параметры изменились - удаляем старый и создадим новый
-                logger.info("Параметры изменились, создаем новый поиск")
-                cursor.execute("DELETE FROM search_queue WHERE id = %s", (existing[0],))
-        
-        # 3. Создаем новую запись в очереди
+        # 2. Создаем новую запись в очереди
         base_query = """
             INSERT INTO search_queue 
             (player_id, mode, rank, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
@@ -889,7 +853,7 @@ def start_search():
         conn.commit()
         logger.info(f"Добавлен в очередь с ID: {queue_id}, player_id: {player_id}")
         
-        # 4. Проверяем кандидатов
+        # 3. Проверяем кандидатов
         return check_candidates(cursor, player_id, mode, data, rating_number, queue_id, conn)
     
     except Exception as e:
