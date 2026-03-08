@@ -1246,14 +1246,19 @@ def respond_match():
             logger.error(f"Match not found: {data['match_id']}")
             return jsonify({"error": "Match not found"}), 404
         
+        # Преобразуем в словарь для удобства
+        columns = [desc[0] for desc in cursor.description]
+        match_dict = dict(zip(columns, match))
+        logger.debug(f"Найден мэтч: {match_dict}")
+        
         # Проверяем не истекло ли время
-        if match[9] and datetime.now() > match[9]:
+        if match_dict['expires_at'] and datetime.now() > match_dict['expires_at']:
             logger.warning(f"Match {data['match_id']} expired")
             
             # Проверяем, может быть оба уже ответили до истечения?
-            if match[10] is not None and match[11] is not None:
+            if match_dict['user1_response'] is not None and match_dict['user2_response'] is not None:
                 logger.info("Оба ответили до истечения, обрабатываем")
-                if match[10] == 'accept' and match[11] == 'accept':
+                if match_dict['user1_response'] == 'accept' and match_dict['user2_response'] == 'accept':
                     cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
                     conn.commit()
                     return jsonify({"status": "accepted", "both_accepted": True})
@@ -1266,33 +1271,33 @@ def respond_match():
             conn.commit()
             return jsonify({"status": "expired", "message": "Время истекло"})
         
-        logger.debug(f"Найден мэтч: {match}")
-        
         if data['response'] == 'timeout':
             cursor.execute("UPDATE matches SET status = 'expired' WHERE id = %s", (data['match_id'],))
             conn.commit()
             logger.info(f"Мэтч {data['match_id']} закрыт по таймауту")
             return jsonify({"status": "timeout", "message": "Время вышло"})
         
-        if match[3] == player_id:
-            if match[10] is not None:
-                logger.warning(f"Player {player_id} already responded with {match[10]}")
-                return jsonify({"status": "already_responded", "your_response": match[10]})
-            cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s", 
-                         (data['response'], data['match_id']))
+        # 👇 ИСПРАВЛЕНО: используем правильные названия колонок
+        if str(match_dict['player1_id']) == str(player_id):
+            if match_dict['user1_response'] is not None:
+                logger.warning(f"Player {player_id} already responded with {match_dict['user1_response']}")
+                return jsonify({"status": "already_responded", "your_response": match_dict['user1_response']})
+            cursor.execute("UPDATE matches SET user1_response = %s WHERE id = %s",
+                          (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player1")
-        elif match[4] == player_id:
-            if match[11] is not None:
-                logger.warning(f"Player {player_id} already responded with {match[11]}")
-                return jsonify({"status": "already_responded", "your_response": match[11]})
-            cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s", 
-                         (data['response'], data['match_id']))
+        elif str(match_dict['player2_id']) == str(player_id):
+            if match_dict['user2_response'] is not None:
+                logger.warning(f"Player {player_id} already responded with {match_dict['user2_response']}")
+                return jsonify({"status": "already_responded", "your_response": match_dict['user2_response']})
+            cursor.execute("UPDATE matches SET user2_response = %s WHERE id = %s",
+                          (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player2")
         else:
             logger.error("User not in this match")
             return jsonify({"error": "User not in this match"}), 403
         
-        cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", 
+        # Проверяем ответы обоих игроков
+        cursor.execute("SELECT user1_response, user2_response, expires_at FROM matches WHERE id = %s", 
                       (data['match_id'],))
         responses = cursor.fetchone()
         logger.debug(f"Ответы: {responses}")
