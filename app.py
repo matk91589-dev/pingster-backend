@@ -751,7 +751,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК - НОВАЯ ВЕРСИЯ С БАКЕТАМИ
+# НАЧАТЬ ПОИСК - С БАКЕТАМИ
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -851,7 +851,7 @@ def start_search():
             conn.close()
 
 # ============================================
-# ПРОВЕРИТЬ МЭТЧ - НОВАЯ ВЕРСИЯ
+# ПРОВЕРИТЬ МЭТЧ - ИСПРАВЛЕНО С ПРАВИЛЬНЫМИ КОЛОНКАМИ
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -881,10 +881,10 @@ def check_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Проверяем, есть ли активный матч
+        # Проверяем, есть ли активный матч - ИСПРАВЛЕНО: используем player1_response и player2_response
         cursor.execute("""
             SELECT id, player1_id, player2_id, mode, compatibility_score, 
-                   expires_at, user1_response, user2_response, status
+                   expires_at, player1_response, player2_response, status
             FROM matches 
             WHERE (player1_id = %s OR player2_id = %s) 
             AND status = 'pending'
@@ -900,26 +900,34 @@ def check_match():
             other_id = match[2] if match[1] == player_id else match[1]
             player_response = match[6] if match[1] == player_id else match[7]
             
-            # Получаем данные оппонента
+            # Получаем данные оппонента из очереди
             cursor.execute("""
-                SELECT p.nick, p.age, p.steam_link, p.faceit_link, sq.style, sq.rank, sq.comment
-                FROM profiles p
-                LEFT JOIN search_queue sq ON p.player_id = sq.player_id
-                WHERE p.player_id = %s
+                SELECT style, rank, comment
+                FROM search_queue 
+                WHERE player_id = %s 
+                ORDER BY joined_at DESC LIMIT 1
             """, (other_id,))
             
-            opponent_data = cursor.fetchone()
+            queue_data = cursor.fetchone()
             
-            if opponent_data:
+            # Получаем данные из профиля
+            cursor.execute("""
+                SELECT nick, age, steam_link, faceit_link
+                FROM profiles WHERE player_id = %s
+            """, (other_id,))
+            
+            profile = cursor.fetchone()
+            
+            if profile:
                 opponent = {
                     "player_id": other_id,
-                    "nick": opponent_data[0],
-                    "age": opponent_data[1],
-                    "style": opponent_data[4] if opponent_data[4] else "fan",
-                    "rating": opponent_data[5] if opponent_data[5] else "0",
-                    "steam_link": opponent_data[2] if opponent_data[2] else "Не указана",
-                    "faceit_link": opponent_data[3] if opponent_data[3] else "Не указана",
-                    "comment": opponent_data[6] if opponent_data[6] else "Нет комментария"
+                    "nick": profile[0],
+                    "age": profile[1],
+                    "style": queue_data[0] if queue_data else "fan",
+                    "rating": queue_data[1] if queue_data else "0",
+                    "steam_link": profile[2] if profile[2] else "Не указана",
+                    "faceit_link": profile[3] if profile[3] else "Не указана",
+                    "comment": queue_data[2] if queue_data and queue_data[2] else "Нет комментария"
                 }
                 
                 return jsonify({
@@ -990,26 +998,24 @@ def check_match():
             
             conn.commit()
             
-            # Отправляем уведомление первому игроку (текущему)
+            # Получаем данные кандидата из профиля
             cursor.execute("""
-                SELECT p.nick, p.age, p.steam_link, p.faceit_link, sq.style, sq.rank, sq.comment
-                FROM profiles p
-                LEFT JOIN search_queue sq ON p.player_id = sq.player_id
-                WHERE p.player_id = %s
+                SELECT nick, age, steam_link, faceit_link
+                FROM profiles WHERE player_id = %s
             """, (candidate[0],))
             
-            opp_data = cursor.fetchone()
+            profile = cursor.fetchone()
             
-            if opp_data:
+            if profile:
                 opponent = {
                     "player_id": candidate[0],
-                    "nick": opp_data[0],
-                    "age": opp_data[1],
-                    "style": opp_data[4] if opp_data[4] else "fan",
-                    "rating": opp_data[5] if opp_data[5] else "0",
-                    "steam_link": opp_data[2] if opp_data[2] else "Не указана",
-                    "faceit_link": opp_data[3] if opp_data[3] else "Не указана",
-                    "comment": opp_data[6] if opp_data[6] else "Нет комментария"
+                    "nick": profile[0],
+                    "age": profile[1],
+                    "style": candidate[1] if candidate[1] else "fan",
+                    "rating": candidate[3] if candidate[3] else "0",
+                    "steam_link": profile[2] if profile[2] else "Не указана",
+                    "faceit_link": profile[3] if profile[3] else "Не указана",
+                    "comment": candidate[4] if candidate[4] else "Нет комментария"
                 }
                 
                 cursor.execute("SELECT expires_at FROM matches WHERE id = %s", (match_id,))
@@ -1036,7 +1042,7 @@ def check_match():
             conn.close()
 
 # ============================================
-# ОТВЕТИТЬ НА МЭТЧ
+# ОТВЕТИТЬ НА МЭТЧ - ИСПРАВЛЕНО С ПРАВИЛЬНЫМИ КОЛОНКАМИ
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
@@ -1066,9 +1072,9 @@ def respond_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Получаем информацию о матче
+        # Получаем информацию о матче - ИСПРАВЛЕНО: используем player1_response и player2_response
         cursor.execute("""
-            SELECT player1_id, player2_id, user1_response, user2_response, expires_at, status
+            SELECT player1_id, player2_id, player1_response, player2_response, expires_at, status
             FROM matches WHERE id = %s
         """, (data['match_id'],))
         
@@ -1093,19 +1099,19 @@ def respond_match():
             conn.commit()
             return jsonify({"status": "expired", "message": "Время истекло"})
         
-        # Обновляем ответ игрока
+        # Обновляем ответ игрока - ИСПРАВЛЕНО: используем player1_response и player2_response
         if str(match[0]) == str(player_id):
             if match[2] is not None:
                 logger.warning(f"Player {player_id} already responded")
                 return jsonify({"status": "already_responded"})
-            cursor.execute("UPDATE matches SET user1_response = %s WHERE id = %s",
+            cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s",
                           (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player1")
         elif str(match[1]) == str(player_id):
             if match[3] is not None:
                 logger.warning(f"Player {player_id} already responded")
                 return jsonify({"status": "already_responded"})
-            cursor.execute("UPDATE matches SET user2_response = %s WHERE id = %s",
+            cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s",
                           (data['response'], data['match_id']))
             logger.debug("Обновлен ответ player2")
         else:
@@ -1113,7 +1119,7 @@ def respond_match():
             return jsonify({"error": "User not in this match"}), 403
         
         # Проверяем ответы обоих
-        cursor.execute("SELECT user1_response, user2_response, expires_at FROM matches WHERE id = %s", 
+        cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", 
                       (data['match_id'],))
         responses = cursor.fetchone()
         
@@ -1245,8 +1251,8 @@ def create_game():
         chat_link = f"https://t.me/+{random.randint(1000000, 9999999)}"
         
         cursor.execute("""
-            INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, created_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
+            INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, 'active', NOW())
             RETURNING id
         """, (data['match_id'], match[0], match[1], chat_id, chat_link))
         
