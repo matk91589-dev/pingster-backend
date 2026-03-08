@@ -806,6 +806,10 @@ def start_search():
         
         logger.debug(f"Найден player_id: {player_id}")
         
+        # Проверка возраста
+        if data.get('age') and (data['age'] < 16 or data['age'] > 100):
+            return jsonify({"error": "Возраст должен быть от 16 до 100 лет"}), 400
+        
         # Определяем режим
         mode = data.get('mode', '').lower()
         
@@ -899,7 +903,7 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
         return jsonify({"status": "searching", "message": "В очереди"})
     
     # Параметры текущего игрока
-    current_time = datetime.now()
+    current_time = datetime.utcnow()
     current = {
         'id': queue_id,
         'player_id': player_id,
@@ -925,7 +929,8 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
             'rank': candidate[3],
             'style': candidate[4],
             'age': candidate[5],
-            'joined_at': candidate[9]
+            'joined_at': candidate[9],
+            'comment': candidate[8]
         }
         
         logger.info(f"Кандидат {idx+1}: player_id={candidate_data['player_id']}, rank={candidate_data['rank']}, style={candidate_data['style']}, age={candidate_data['age']}")
@@ -995,15 +1000,17 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
         logger.info(f"Найден лучший кандидат с score={best_score}")
         
         # ИСПРАВЛЕНИЕ: создаем единое время истечения для обоих игроков
-        match_expires = datetime.now() + timedelta(seconds=30)
+        match_expires = datetime.utcnow() + timedelta(seconds=30)
         
-        # Создаем match с player_id
+        # ИСПРАВЛЕНИЕ: сохраняем комментарии в match
         cursor.execute("""
             INSERT INTO matches 
-            (player1_id, player2_id, mode, compatibility_score, created_at, expires_at)
-            VALUES (%s, %s, %s, %s, NOW(), %s)
+            (player1_id, player2_id, mode, compatibility_score, created_at, expires_at,
+             player1_comment, player2_comment)
+            VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s)
             RETURNING id
-        """, (player_id, best_match['player_id'], mode, best_score, match_expires))
+        """, (player_id, best_match['player_id'], mode, best_score, match_expires,
+              data.get('comment'), best_match['comment']))
         
         match_id = cursor.fetchone()[0]
         logger.info(f"Создан match ID: {match_id}, истекает: {match_expires}")
@@ -1017,7 +1024,7 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
         
         # Получаем ник и другие данные для оппонента
         cursor.execute("""
-            SELECT nick, age, steam_link, faceit_link, comment
+            SELECT nick, age, steam_link, faceit_link
             FROM profiles WHERE player_id = %s
         """, (best_match['player_id'],))
         opponent_profile = cursor.fetchone()
@@ -1031,11 +1038,12 @@ def check_candidates(cursor, player_id, mode, data, rating_number, queue_id, con
             "rating": best_match['rank'],
             "steam_link": opponent_profile[2] if opponent_profile and opponent_profile[2] else "Не указана",
             "faceit_link": opponent_profile[3] if opponent_profile and opponent_profile[3] else "Не указана",
-            "comment": opponent_profile[4] if opponent_profile and opponent_profile[4] else "Нет комментария"
+            "comment": best_match['comment'] if best_match['comment'] else "Нет комментария"
         }
         
+        # ИСПРАВЛЕНИЕ: используем match_found вместо status
         return jsonify({
-            "status": "match_found",
+            "match_found": True,
             "match_id": match_id,
             "score": best_score,
             "opponent": opponent_data,
@@ -1096,7 +1104,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# ПРОВЕРИТЬ МЭТЧ
+# ПРОВЕРИТЬ МЭТЧ - ИСПРАВЛЕНО
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -1126,8 +1134,12 @@ def check_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
+        # ИСПРАВЛЕНИЕ: выбираем только нужные поля
         cursor.execute("""
-            SELECT * FROM matches 
+            SELECT id, player1_id, player2_id, mode, compatibility_score, 
+                   expires_at, user1_response, user2_response, status,
+                   player1_comment, player2_comment
+            FROM matches 
             WHERE (player1_id = %s OR player2_id = %s) 
             AND status = 'pending'
             ORDER BY id DESC LIMIT 1
@@ -1144,13 +1156,16 @@ def check_match():
         
         other_id = None
         player_response = None
+        other_comment = None
         
-        if match[3] == player_id:
-            other_id = match[4]
-            player_response = match[10]
-        elif match[4] == player_id:
-            other_id = match[3]
-            player_response = match[11]
+        if match[1] == player_id:
+            other_id = match[2]
+            player_response = match[6]
+            other_comment = match[10]
+        elif match[2] == player_id:
+            other_id = match[1]
+            player_response = match[7]
+            other_comment = match[9]
         
         logger.debug(f"ID оппонента: {other_id}")
         
@@ -1171,13 +1186,14 @@ def check_match():
         
         logger.debug(f"Данные оппонента: nick={opponent[0]}, age={opponent[1]}")
         
+        # Получаем стиль из поиска
         cursor.execute("""
-            SELECT comment FROM search_queue 
+            SELECT style FROM search_queue 
             WHERE player_id = %s AND expires_at > NOW()
             ORDER BY joined_at DESC LIMIT 1
         """, (other_id,))
-        comment_result = cursor.fetchone()
-        comment = comment_result[0] if comment_result else "Нет комментария"
+        style_result = cursor.fetchone()
+        style = style_result[0] if style_result else "fan"
         
         response_data = {
             "match_found": True,
@@ -1186,14 +1202,14 @@ def check_match():
                 "player_id": other_id,
                 "nick": opponent[0],
                 "age": opponent[1],
-                "style": "fan",
-                "rating": str(match[6]),
+                "style": style,
+                "rating": str(match[4]),
                 "steam_link": opponent[2] if opponent[2] else "Не указана",
                 "faceit_link": opponent[3] if opponent[3] else "Не указана",
-                "comment": comment
+                "comment": other_comment if other_comment else "Нет комментария"
             },
             "your_response": player_response,
-            "expires_at": match[9].isoformat() if match[9] else None
+            "expires_at": match[5].isoformat() if match[5] else None
         }
         
         logger.info(f"Отправляем данные: {response_data}")
@@ -1251,8 +1267,8 @@ def respond_match():
         match_dict = dict(zip(columns, match))
         logger.debug(f"Найден мэтч: {match_dict}")
         
-        # Проверяем не истекло ли время
-        if match_dict['expires_at'] and datetime.now() > match_dict['expires_at']:
+        # ИСПРАВЛЕНИЕ: используем UTC для времени
+        if match_dict['expires_at'] and datetime.utcnow() > match_dict['expires_at']:
             logger.warning(f"Match {data['match_id']} expired")
             
             # Проверяем, может быть оба уже ответили до истечения?
@@ -1277,7 +1293,6 @@ def respond_match():
             logger.info(f"Мэтч {data['match_id']} закрыт по таймауту")
             return jsonify({"status": "timeout", "message": "Время вышло"})
         
-        # 👇 ИСПРАВЛЕНО: используем правильные названия колонок
         if str(match_dict['player1_id']) == str(player_id):
             if match_dict['user1_response'] is not None:
                 logger.warning(f"Player {player_id} already responded with {match_dict['user1_response']}")
@@ -1319,7 +1334,8 @@ def respond_match():
             conn.commit()
             time_left = 30
             if responses[2]:
-                time_left = max(0, int((responses[2] - datetime.now()).total_seconds()))
+                # ИСПРАВЛЕНИЕ: используем UTC для расчета времени
+                time_left = max(0, int((responses[2] - datetime.utcnow()).total_seconds()))
             logger.info(f"Ожидание ответа, осталось {time_left} сек")
             return jsonify({
                 "status": "waiting", 
