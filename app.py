@@ -752,7 +752,7 @@ def delete_item():
             conn.close()
 
 # ============================================
-# НАЧАТЬ ПОИСК - С БАКЕТАМИ
+# НАЧАТЬ ПОИСК - С БАКЕТАМИ И ПРОВЕРКОЙ СОСТОЯНИЯ
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
 def start_search():
@@ -787,6 +787,16 @@ def start_search():
         if data.get('age') and (data['age'] < 16 or data['age'] > 100):
             return jsonify({"error": "Возраст должен быть от 16 до 100 лет"}), 400
         
+        # Проверяем, нет ли уже активного матча у игрока
+        cursor.execute("""
+            SELECT id FROM matches 
+            WHERE (player1_id = %s OR player2_id = %s) 
+            AND status = 'pending'
+        """, (player_id, player_id))
+        if cursor.fetchone():
+            logger.warning(f"Игрок {player_id} уже участвует в активном матче")
+            return jsonify({"error": "Уже в матче"}), 400
+        
         # Определяем режим
         mode = data.get('mode', '').lower()
         
@@ -808,7 +818,7 @@ def start_search():
         
         logger.debug(f"Рейтинг: {rating_number}, бакет: {rating_bucket}")
         
-        # Удаляем старые записи этого игрока (только если они не в матче)
+        # Удаляем старые waiting записи этого игрока
         cursor.execute("""
             DELETE FROM search_queue 
             WHERE player_id = %s AND status = 'waiting'
@@ -816,7 +826,7 @@ def start_search():
         deleted_old = cursor.rowcount
         logger.debug(f"Удалено старых записей: {deleted_old}")
         
-        # Создаем новую запись в очереди
+        # Создаем новую запись в очереди со статусом waiting
         cursor.execute("""
             INSERT INTO search_queue 
             (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at, status)
@@ -852,7 +862,7 @@ def start_search():
             conn.close()
 
 # ============================================
-# ПРОВЕРИТЬ МЭТЧ - ИСПРАВЛЕНО С FOR UPDATE SKIP LOCKED
+# ПРОВЕРИТЬ МЭТЧ - С FOR UPDATE SKIP LOCKED
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -882,7 +892,7 @@ def check_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Проверяем, есть ли активный матч
+        # 1. Проверяем, есть ли активный матч
         cursor.execute("""
             SELECT id, player1_id, player2_id, mode, compatibility_score, 
                    expires_at, player1_response, player2_response, status
@@ -901,7 +911,7 @@ def check_match():
             other_id = match['player2_id'] if match['player1_id'] == player_id else match['player1_id']
             player_response = match['player1_response'] if match['player1_id'] == player_id else match['player2_response']
             
-            # Получаем данные оппонента из очереди
+            # Получаем данные оппонента из очереди (если еще есть)
             cursor.execute("""
                 SELECT style, rank, comment
                 FROM search_queue 
@@ -942,10 +952,10 @@ def check_match():
                     "server_time": server_time.isoformat()
                 })
         
-        # Если нет активного матча, ищем кандидатов с блокировкой
+        # 2. Если нет активного матча, ищем кандидатов (только waiting)
         logger.debug("Поиск кандидатов в очереди")
         
-        # Получаем данные текущего игрока из очереди
+        # Получаем данные текущего игрока из очереди (он должен быть waiting)
         cursor.execute("""
             SELECT rating_bucket, mode FROM search_queue 
             WHERE player_id = %s AND status = 'waiting' AND expires_at > NOW()
@@ -964,7 +974,7 @@ def check_match():
         
         logger.debug(f"Поиск кандидатов: режим={mode}, бакет от {min_bucket} до {max_bucket}")
         
-        # Ищем подходящих кандидатов с блокировкой строки
+        # Ищем подходящих кандидатов с блокировкой строки (FOR UPDATE SKIP LOCKED)
         cursor.execute("""
             SELECT player_id, style, age, rank, comment
             FROM search_queue 
@@ -983,7 +993,7 @@ def check_match():
         if candidate:
             logger.info(f"Найден кандидат: player_id={candidate['player_id']}")
             
-            # Создаем матч
+            # Создаем матч (status = 'pending')
             cursor.execute("""
                 INSERT INTO matches 
                 (player1_id, player2_id, mode, compatibility_score, created_at, expires_at, status)
@@ -997,7 +1007,7 @@ def check_match():
             
             logger.info(f"Создан матч ID: {match_id}")
             
-            # Обновляем статус в очереди
+            # Обновляем статус в очереди на 'matched' и проставляем match_id
             cursor.execute("""
                 UPDATE search_queue 
                 SET status = 'matched', match_id = %s
@@ -1052,7 +1062,7 @@ def check_match():
             conn.close()
 
 # ============================================
-# ОТВЕТИТЬ НА МЭТЧ - ИСПРАВЛЕНО С TIMEZONE
+# ОТВЕТИТЬ НА МЭТЧ - С УПРАВЛЕНИЕМ ОЧЕРЕДЬЮ
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
@@ -1094,40 +1104,40 @@ def respond_match():
             logger.error(f"Match not found: {data['match_id']}")
             return jsonify({"error": "Match not found"}), 404
         
-        # Проверяем не истекло ли время (используем timezone.utcnow)
+        # Проверяем не истекло ли время
         current_time = datetime.now(timezone.utc)
         if match['expires_at'] and current_time > match['expires_at']:
             logger.warning(f"Match {data['match_id']} expired")
             
-            # Сбрасываем ответы и статус
+            # Сбрасываем ответы, помечаем матч как expired
             cursor.execute("""
                 UPDATE matches 
                 SET status = 'expired', player1_response = NULL, player2_response = NULL 
                 WHERE id = %s
             """, (data['match_id'],))
             
-            # Возвращаем игроков в очередь
+            # Возвращаем обоих игроков в очередь (status = 'waiting', match_id = NULL)
             cursor.execute("""
                 UPDATE search_queue 
                 SET status = 'waiting', match_id = NULL
-                WHERE player_id IN (%s, %s)
+                WHERE player_id IN (%s, %s) AND status = 'matched'
             """, (match['player1_id'], match['player2_id']))
             
             conn.commit()
             return jsonify({"status": "expired", "message": "Время истекло"})
         
         if data['response'] == 'timeout':
+            # Аналогично expired
             cursor.execute("""
                 UPDATE matches 
                 SET status = 'expired', player1_response = NULL, player2_response = NULL 
                 WHERE id = %s
             """, (data['match_id'],))
             
-            # Возвращаем игроков в очередь
             cursor.execute("""
                 UPDATE search_queue 
                 SET status = 'waiting', match_id = NULL
-                WHERE player_id IN (%s, %s)
+                WHERE player_id IN (%s, %s) AND status = 'matched'
             """, (match['player1_id'], match['player2_id']))
             
             conn.commit()
@@ -1159,25 +1169,24 @@ def respond_match():
         responses = cursor.fetchone()
         
         if responses['player1_response'] == 'accept' and responses['player2_response'] == 'accept':
-            # Оба приняли
+            # Оба приняли — матч accepted, очередь пока остаётся matched (будет удалена при создании игры)
             cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
             conn.commit()
             logger.info("Мэтч принят обоими")
             return jsonify({"status": "accepted", "both_accepted": True})
         
         elif responses['player1_response'] == 'reject' or responses['player2_response'] == 'reject':
-            # Кто-то отклонил
+            # Кто-то отклонил — матч rejected, возвращаем игроков в waiting
             cursor.execute("""
                 UPDATE matches 
                 SET status = 'rejected', player1_response = NULL, player2_response = NULL 
                 WHERE id = %s
             """, (data['match_id'],))
             
-            # Возвращаем игроков в очередь
             cursor.execute("""
                 UPDATE search_queue 
                 SET status = 'waiting', match_id = NULL
-                WHERE player_id IN (%s, %s)
+                WHERE player_id IN (%s, %s) AND status = 'matched'
             """, (match['player1_id'], match['player2_id']))
             
             conn.commit()
@@ -1208,7 +1217,7 @@ def respond_match():
             conn.close()
 
 # ============================================
-# ОСТАНОВИТЬ ПОИСК
+# ОСТАНОВИТЬ ПОИСК (выход с экрана поиска)
 # ============================================
 @app.route('/api/search/stop', methods=['POST'])
 def stop_search():
@@ -1238,6 +1247,7 @@ def stop_search():
         
         logger.debug(f"Найден player_id: {player_id}")
         
+        # Удаляем только waiting записи (игрок сам отменил поиск, не дожидаясь матча)
         cursor.execute("DELETE FROM search_queue WHERE player_id = %s AND status = 'waiting'", (player_id,))
         deleted = cursor.rowcount
         conn.commit()
@@ -1257,7 +1267,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# СОЗДАТЬ ИГРУ
+# СОЗДАТЬ ИГРУ - окончательно удаляем из очереди
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1299,7 +1309,7 @@ def create_game():
         
         game_id = cursor.fetchone()[0]
         
-        # Удаляем игроков из очереди
+        # Удаляем игроков из очереди (они больше не нужны)
         cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", (match[0], match[1]))
         
         conn.commit()
@@ -1384,10 +1394,11 @@ def vote_player():
 if __name__ == '__main__':
     print("🔥 Pingster backend с бакетированием запускается...")
     print("🚀 Новая архитектура:")
-    print("   - search_queue с rating_bucket")
+    print("   - search_queue: waiting → matched → (waiting при отказе) → удаление при создании игры")
     print("   - FOR UPDATE SKIP LOCKED для защиты от race condition")
     print("   - Синхронизация времени через server_time")
-    print("   - Сброс ответов при reject/expire")
+    print("   - Сброс ответов и возврат в очередь при reject/expire")
+    print("   - Проверка активного матча перед поиском")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
