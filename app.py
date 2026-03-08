@@ -882,7 +882,7 @@ def match_status(match_id):
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         cursor.execute("""
-            SELECT status, player1_response, player2_response
+            SELECT status, player1_response, player2_response, expires_at
             FROM matches
             WHERE id = %s
         """, (match_id,))
@@ -894,11 +894,13 @@ def match_status(match_id):
         
         if match['player1_response'] == 'accept' and match['player2_response'] == 'accept':
             return jsonify({
-                "status": "both_accepted"
+                "status": "both_accepted",
+                "expires_at": match['expires_at'].isoformat() if match['expires_at'] else None
             })
         
         return jsonify({
-            "status": match['status']
+            "status": match['status'],
+            "expires_at": match['expires_at'].isoformat() if match['expires_at'] else None
         })
     
     except Exception as e:
@@ -955,10 +957,8 @@ def check_match():
         if existing_match:
             logger.info(f"Найден существующий матч ID={existing_match['id']}")
             
-            # Получаем данные оппонента
             other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
             
-            # Получаем данные оппонента из профиля
             cursor.execute("""
                 SELECT nick, age, steam_link, faceit_link
                 FROM profiles WHERE player_id = %s
@@ -987,7 +987,6 @@ def check_match():
         
         # === ШАГ 2: Ищем кандидата с блокировкой ===
         
-        # Блокируем текущего игрока
         cursor.execute("""
             SELECT id FROM search_queue 
             WHERE player_id = %s AND status = 'waiting'
@@ -999,7 +998,6 @@ def check_match():
             logger.debug("Игрок не в очереди или уже не waiting")
             return jsonify({"match_found": False})
         
-        # Получаем данные текущего игрока
         cursor.execute("""
             SELECT rating_bucket, mode FROM search_queue 
             WHERE player_id = %s AND status = 'waiting' AND expires_at > NOW()
@@ -1018,7 +1016,6 @@ def check_match():
         
         logger.debug(f"Поиск кандидатов: режим={mode}, бакет от {min_bucket} до {max_bucket}")
         
-        # Ищем кандидата с FOR UPDATE SKIP LOCKED
         cursor.execute("""
             SELECT player_id, style, age, rank, comment
             FROM search_queue 
@@ -1037,7 +1034,7 @@ def check_match():
         if candidate:
             logger.info(f"Найден кандидат: player_id={candidate['player_id']}")
             
-            # Создаем матч с expires_at = NOW() + 30 seconds
+            # ВАЖНО: expires_at вычисляется ОДИН раз и одинаков для обоих игроков
             expires_at = datetime.utcnow() + timedelta(seconds=30)
             
             cursor.execute("""
@@ -1048,9 +1045,8 @@ def check_match():
             """, (player_id, candidate['player_id'], mode, expires_at))
             
             match_id = cursor.fetchone()['id']
-            logger.info(f"Создан матч ID: {match_id}")
+            logger.info(f"Создан матч ID: {match_id}, истекает: {expires_at}")
             
-            # Обновляем статус в очереди на 'matched'
             cursor.execute("""
                 UPDATE search_queue 
                 SET status = 'matched', match_id = %s
@@ -1059,7 +1055,6 @@ def check_match():
             
             conn.commit()
             
-            # Получаем данные кандидата из профиля
             cursor.execute("""
                 SELECT nick, age, steam_link, faceit_link
                 FROM profiles WHERE player_id = %s
@@ -1135,7 +1130,6 @@ def respond_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # Получаем информацию о матче
         cursor.execute("""
             SELECT player1_id, player2_id, player1_response, player2_response, expires_at, status
             FROM matches WHERE id = %s
@@ -1158,7 +1152,6 @@ def respond_match():
                 WHERE id = %s
             """, (data['match_id'],))
             
-            # Возвращаем игроков в очередь
             cursor.execute("""
                 UPDATE search_queue 
                 SET status = 'waiting', match_id = NULL
@@ -1187,27 +1180,23 @@ def respond_match():
             logger.error("User not in this match")
             return jsonify({"error": "User not in this match"}), 403
         
-        # Проверяем ответы обоих
         cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", 
                       (data['match_id'],))
         responses = cursor.fetchone()
         
         if responses['player1_response'] == 'accept' and responses['player2_response'] == 'accept':
-            # Оба приняли
             cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
             conn.commit()
             logger.info("Мэтч принят обоими")
             return jsonify({"status": "accepted", "both_accepted": True})
         
         elif responses['player1_response'] == 'reject' or responses['player2_response'] == 'reject':
-            # Кто-то отклонил
             cursor.execute("""
                 UPDATE matches 
                 SET status = 'rejected', player1_response = NULL, player2_response = NULL 
                 WHERE id = %s
             """, (data['match_id'],))
             
-            # Возвращаем игроков в очередь
             cursor.execute("""
                 UPDATE search_queue 
                 SET status = 'waiting', match_id = NULL
@@ -1219,7 +1208,6 @@ def respond_match():
             return jsonify({"status": "rejected", "both_accepted": False})
         
         else:
-            # Ждем второго
             conn.commit()
             time_left = 0
             if responses['expires_at']:
@@ -1314,7 +1302,6 @@ def create_game():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Обновляем статус матча на accepted
         cursor.execute("""
             UPDATE matches
             SET status = 'accepted'
@@ -1339,7 +1326,6 @@ def create_game():
         
         game_id = cursor.fetchone()[0]
         
-        # Удаляем игроков из очереди по match_id
         cursor.execute("DELETE FROM search_queue WHERE match_id = %s", (data['match_id'],))
         
         conn.commit()
@@ -1426,7 +1412,7 @@ if __name__ == '__main__':
     print("🚀 Новая архитектура:")
     print("   - search_queue: waiting → matched → (waiting при отказе) → удаление при создании игры")
     print("   - FOR UPDATE SKIP LOCKED для защиты от race condition")
-    print("   - Блокировка текущего игрока перед поиском кандидата")
+    print("   - Единое время истечения для обоих игроков")
     print("   - Синхронизация времени через server_time")
     print("   - Сброс ответов и возврат в очередь при reject/expire")
     print("   - Проверка активного матча перед поиском")
