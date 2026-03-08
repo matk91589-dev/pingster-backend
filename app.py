@@ -9,7 +9,7 @@ from flask_cors import CORS
 import psycopg2
 import psycopg2.extras
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import logging
 
 # Настройка логирования
@@ -22,14 +22,21 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
+# Конфигурация из переменных окружения
+DB_HOST = os.getenv("DB_HOST", "85.239.33.182")
+DB_NAME = os.getenv("DB_NAME", "pingster_db")
+DB_USER = os.getenv("DB_USER", "gen_user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "{,@~:5my>jvOAj")   # Срочно сменить!
+DB_PORT = os.getenv("DB_PORT", 5432)
+
 def get_db():
     logger.debug("Подключение к базе данных...")
     return psycopg2.connect(
-        host="85.239.33.182",
-        database="pingster_db",
-        user="gen_user",
-        password="{,@~:5my>jvOAj",
-        port=5432
+        host=DB_HOST,
+        database=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        port=DB_PORT
     )
 
 def get_player_id(telegram_id):
@@ -862,7 +869,7 @@ def start_search():
             conn.close()
 
 # ============================================
-# ПРОВЕРИТЬ МЭТЧ - С FOR UPDATE SKIP LOCKED
+# ПРОВЕРИТЬ МЭТЧ - С FOR UPDATE SKIP LOCKED И БЛОКИРОВКОЙ ТЕКУЩЕГО
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -941,7 +948,7 @@ def check_match():
                     "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
                 }
                 
-                server_time = datetime.now(timezone.utc)
+                server_time = datetime.utcnow()
                 
                 return jsonify({
                     "match_found": True,
@@ -952,10 +959,19 @@ def check_match():
                     "server_time": server_time.isoformat()
                 })
         
-        # 2. Если нет активного матча, ищем кандидатов (только waiting)
-        logger.debug("Поиск кандидатов в очереди")
+        # 2. Блокируем текущего игрока, чтобы убедиться, что он всё ещё waiting
+        cursor.execute("""
+            SELECT id FROM search_queue 
+            WHERE player_id = %s AND status = 'waiting'
+            FOR UPDATE
+        """, (player_id,))
+        current_locked = cursor.fetchone()
         
-        # Получаем данные текущего игрока из очереди (он должен быть waiting)
+        if not current_locked:
+            logger.debug("Игрок не в очереди или уже не waiting")
+            return jsonify({"match_found": False})
+        
+        # Получаем данные текущего игрока для поиска кандидатов
         cursor.execute("""
             SELECT rating_bucket, mode FROM search_queue 
             WHERE player_id = %s AND status = 'waiting' AND expires_at > NOW()
@@ -965,7 +981,7 @@ def check_match():
         current = cursor.fetchone()
         
         if not current:
-            logger.debug("Игрок не в очереди")
+            logger.debug("Игрок не в очереди (повторная проверка)")
             return jsonify({"match_found": False})
         
         bucket, mode = current['rating_bucket'], current['mode']
@@ -974,12 +990,13 @@ def check_match():
         
         logger.debug(f"Поиск кандидатов: режим={mode}, бакет от {min_bucket} до {max_bucket}")
         
-        # Ищем подходящих кандидатов с блокировкой строки (FOR UPDATE SKIP LOCKED)
+        # Ищем подходящих кандидатов с блокировкой строки
         cursor.execute("""
             SELECT player_id, style, age, rank, comment
             FROM search_queue 
             WHERE mode = %s 
             AND status = 'waiting'
+            AND match_id IS NULL
             AND rating_bucket BETWEEN %s AND %s
             AND player_id != %s
             AND expires_at > NOW()
@@ -1036,7 +1053,7 @@ def check_match():
                     "comment": candidate['comment'] if candidate['comment'] else "Нет комментария"
                 }
                 
-                server_time = datetime.now(timezone.utc)
+                server_time = datetime.utcnow()
                 
                 return jsonify({
                     "match_found": True,
@@ -1104,8 +1121,8 @@ def respond_match():
             logger.error(f"Match not found: {data['match_id']}")
             return jsonify({"error": "Match not found"}), 404
         
-        # Проверяем не истекло ли время
-        current_time = datetime.now(timezone.utc)
+        # Проверяем не истекло ли время (используем utcnow, expires_at из БД naive)
+        current_time = datetime.utcnow()
         if match['expires_at'] and current_time > match['expires_at']:
             logger.warning(f"Match {data['match_id']} expired")
             
@@ -1198,7 +1215,7 @@ def respond_match():
             conn.commit()
             time_left = 0
             if responses['expires_at']:
-                time_left = max(0, int((responses['expires_at'] - datetime.now(timezone.utc)).total_seconds()))
+                time_left = max(0, int((responses['expires_at'] - datetime.utcnow()).total_seconds()))
             return jsonify({
                 "status": "waiting", 
                 "both_accepted": False,
@@ -1267,7 +1284,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# СОЗДАТЬ ИГРУ - окончательно удаляем из очереди
+# СОЗДАТЬ ИГРУ - окончательно удаляем из очереди по match_id
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1309,8 +1326,8 @@ def create_game():
         
         game_id = cursor.fetchone()[0]
         
-        # Удаляем игроков из очереди (они больше не нужны)
-        cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", (match[0], match[1]))
+        # Удаляем игроков из очереди по match_id (безопаснее, чем по player_id)
+        cursor.execute("DELETE FROM search_queue WHERE match_id = %s", (data['match_id'],))
         
         conn.commit()
         logger.info(f"Создана игра ID: {game_id}, чат: {chat_link}")
@@ -1396,6 +1413,7 @@ if __name__ == '__main__':
     print("🚀 Новая архитектура:")
     print("   - search_queue: waiting → matched → (waiting при отказе) → удаление при создании игры")
     print("   - FOR UPDATE SKIP LOCKED для защиты от race condition")
+    print("   - Блокировка текущего игрока перед поиском кандидата")
     print("   - Синхронизация времени через server_time")
     print("   - Сброс ответов и возврат в очередь при reject/expire")
     print("   - Проверка активного матча перед поиском")
