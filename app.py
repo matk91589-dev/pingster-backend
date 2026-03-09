@@ -1288,7 +1288,7 @@ def create_game():
         game_id = cursor.fetchone()[0]
         
         # Удаляем матч
-        cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
+        # cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
         logger.info(f"✅ Матч {data['match_id']} удален")
         
         conn.commit()
