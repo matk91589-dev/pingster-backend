@@ -118,7 +118,6 @@ def get_range_buckets(mode, style, bucket):
     
     elif mode in ['mm prime', 'mm public']:
         if style == 'tryhard':
-            # Для рангов фильтруем отдельно
             return None, None
         return None, None
     
@@ -658,7 +657,7 @@ def start_search():
         cursor.execute("""
             SELECT id FROM matches 
             WHERE (player1_id = %s OR player2_id = %s) 
-            AND status = 'pending'
+            AND status IN ('pending', 'accepted')
             AND expires_at > NOW()
         """, (player_id, player_id))
         if cursor.fetchone():
@@ -741,9 +740,9 @@ def check_match():
             AND expires_at < NOW()
         """, (player_id, player_id))
         
-        # === ШАГ 1: Проверяем существующий матч ===
+        # === ШАГ 0: Проверяем существующий матч (ВНЕ ЗАВИСИМОСТИ ОТ ОЧЕРЕДИ) ===
         cursor.execute("""
-            SELECT id, player1_id, player2_id, expires_at
+            SELECT id, player1_id, player2_id, expires_at, status
             FROM matches
             WHERE (player1_id = %s OR player2_id = %s)
             AND status IN ('pending', 'accepted')
@@ -754,30 +753,39 @@ def check_match():
         existing_match = cursor.fetchone()
         
         if existing_match:
-            logger.info(f"Найден существующий матч ID={existing_match['id']}")
+            logger.info(f"Найден существующий матч ID={existing_match['id']} для игрока {player_id}")
             
             other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
             
+            # Получаем данные соперника из profiles
             cursor.execute("""
-                SELECT p.nick, p.age, p.steam_link, p.faceit_link,
-                       sq.style, sq.rank, sq.comment
-                FROM profiles p
-                LEFT JOIN search_queue sq ON p.player_id = sq.player_id
-                WHERE p.player_id = %s
+                SELECT nick, age, steam_link, faceit_link
+                FROM profiles WHERE player_id = %s
             """, (other_id,))
             
             profile = cursor.fetchone()
             
             if profile:
+                # Пытаемся получить стиль и ранг (из search_queue, если есть)
+                cursor.execute("""
+                    SELECT style, rank, comment
+                    FROM search_queue 
+                    WHERE player_id = %s
+                    ORDER BY joined_at DESC
+                    LIMIT 1
+                """, (other_id,))
+                
+                queue_data = cursor.fetchone()
+                
                 opponent = {
                     "player_id": other_id,
                     "nick": profile['nick'],
                     "age": profile['age'],
-                    "style": profile['style'] if profile['style'] else "fan",
-                    "rating": profile['rank'] if profile['rank'] else "0",
+                    "style": queue_data['style'] if queue_data and queue_data['style'] else "fan",
+                    "rating": queue_data['rank'] if queue_data and queue_data['rank'] else "0",
                     "steam_link": profile['steam_link'] if profile['steam_link'] else "Не указана",
                     "faceit_link": profile['faceit_link'] if profile['faceit_link'] else "Не указана",
-                    "comment": profile['comment'] if profile['comment'] else "Нет комментария"
+                    "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
                 }
                 
                 return jsonify({
@@ -788,7 +796,7 @@ def check_match():
                     "server_time": datetime.utcnow().isoformat()
                 })
         
-        # === ШАГ 2: Получаем данные текущего игрока ===
+        # === ШАГ 1: Получаем данные текущего игрока из очереди ===
         cursor.execute("""
             SELECT * FROM search_queue 
             WHERE player_id = %s AND expires_at > NOW()
@@ -811,7 +819,7 @@ def check_match():
         # Определяем диапазон поиска
         min_bucket, max_bucket = get_range_buckets(current_mode, current_style, current_bucket)
         
-        # === ШАГ 3: Ищем кандидатов ===
+        # === ШАГ 2: Ищем кандидатов ===
         query = """
             SELECT 
                 sq.*,
@@ -839,7 +847,7 @@ def check_match():
         if not candidates:
             return jsonify({"match_found": False})
         
-        # === ШАГ 4: Сортируем кандидатов ===
+        # === ШАГ 3: Сортируем кандидатов ===
         same_style = []
         other_style = []
         
@@ -854,7 +862,7 @@ def check_match():
         
         best_candidate = (same_style + other_style)[0]
         
-        # === ШАГ 5: Создаем матч и удаляем из очереди ===
+        # === ШАГ 4: Создаем матч и удаляем из очереди ===
         now = datetime.utcnow()
         expires_at = now + timedelta(seconds=30)
         
@@ -1015,21 +1023,44 @@ def respond_match():
             now = datetime.utcnow()
             expires_at = now + timedelta(minutes=1)
             
+            # Получаем данные игроков из старой записи (если есть)
             cursor.execute("""
-                INSERT INTO search_queue 
-                (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-                SELECT %s, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, %s, %s
+                SELECT mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment
                 FROM search_queue 
                 WHERE player_id = %s
-            """, (match['player1_id'], now, expires_at, match['player1_id']))
+                ORDER BY joined_at DESC
+                LIMIT 1
+            """, (match['player1_id'],))
+            p1_data = cursor.fetchone()
             
             cursor.execute("""
-                INSERT INTO search_queue 
-                (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-                SELECT %s, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, %s, %s
+                SELECT mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment
                 FROM search_queue 
                 WHERE player_id = %s
-            """, (match['player2_id'], now, expires_at, match['player2_id']))
+                ORDER BY joined_at DESC
+                LIMIT 1
+            """, (match['player2_id'],))
+            p2_data = cursor.fetchone()
+            
+            if p1_data:
+                cursor.execute("""
+                    INSERT INTO search_queue 
+                    (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    match['player1_id'], p1_data[0], p1_data[1], p1_data[2], p1_data[3], p1_data[4], 
+                    p1_data[5], p1_data[6], p1_data[7], now, expires_at
+                ))
+            
+            if p2_data:
+                cursor.execute("""
+                    INSERT INTO search_queue 
+                    (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    match['player2_id'], p2_data[0], p2_data[1], p2_data[2], p2_data[3], p2_data[4], 
+                    p2_data[5], p2_data[6], p2_data[7], now, expires_at
+                ))
             
             conn.commit()
             return jsonify({"status": "rejected", "both_accepted": False})
@@ -1120,10 +1151,10 @@ def create_game():
         player1_id, player2_id = match[0], match[1]
         
         # Получаем telegram_id игроков
-        cursor.execute("SELECT telegram_id, nick FROM users u JOIN profiles p ON u.player_id = p.player_id WHERE u.player_id = %s", (player1_id,))
+        cursor.execute("SELECT u.telegram_id, p.nick FROM users u JOIN profiles p ON u.player_id = p.player_id WHERE u.player_id = %s", (player1_id,))
         user1 = cursor.fetchone()
         
-        cursor.execute("SELECT telegram_id, nick FROM users u JOIN profiles p ON u.player_id = p.player_id WHERE u.player_id = %s", (player2_id,))
+        cursor.execute("SELECT u.telegram_id, p.nick FROM users u JOIN profiles p ON u.player_id = p.player_id WHERE u.player_id = %s", (player2_id,))
         user2 = cursor.fetchone()
         
         if not user1 or not user2:
@@ -1230,6 +1261,7 @@ if __name__ == '__main__':
     print("   - search_queue: только waiting (без status/match_id)")
     print("   - matches: pending → accepted → удаление после создания чата")
     print("   - При отказе: удаляем матч и возвращаем в очередь")
+    print("   - Добавлена проверка существующего матча в начале check_match")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
