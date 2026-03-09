@@ -646,18 +646,6 @@ def start_search():
         if data.get('age') and (data['age'] < 16 or data['age'] > 100):
             return jsonify({"error": "Возраст должен быть от 16 до 100 лет"}), 400
         
-        # Помечаем истекшие матчи
-        cursor.execute("""
-            UPDATE matches 
-            SET status = 'expired' 
-            WHERE (player1_id = %s OR player2_id = %s) 
-            AND status = 'pending' 
-            AND expires_at < NOW()
-        """, (player_id, player_id))
-        expired_count = cursor.rowcount
-        if expired_count > 0:
-            logger.info(f"Помечено {expired_count} истекших матчей")
-        
         # Проверяем активный матч
         cursor.execute("""
             SELECT id FROM matches 
@@ -742,16 +730,6 @@ def check_match():
         
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        
-        # Помечаем истекшие матчи
-        cursor.execute("""
-            UPDATE matches 
-            SET status = 'expired' 
-            WHERE (player1_id = %s OR player2_id = %s) 
-            AND status = 'pending' 
-            AND expires_at < NOW()
-        """, (player_id, player_id))
-        conn.commit()
         
         # === ШАГ 0: Проверяем существующий матч ===
         logger.info("ШАГ 0: Проверяем существующий матч...")
@@ -908,8 +886,20 @@ def check_match():
         best_score = calculate_score(current, best_candidate, current_mode)
         logger.info(f"Лучший кандидат: {best_candidate['player_id']}, score={best_score}")
         
-        # === ШАГ 4: Создаем матч и удаляем из очереди ===
-        logger.info("ШАГ 4: Создаем матч...")
+        # === ШАГ 4: Проверяем, что кандидат еще в очереди ===
+        logger.info("ШАГ 4: Проверяем кандидата...")
+        cursor.execute("""
+            SELECT id FROM search_queue 
+            WHERE player_id = %s AND expires_at > NOW()
+            FOR UPDATE
+        """, (best_candidate['player_id'],))
+        
+        if not cursor.fetchone():
+            logger.warning(f"Кандидат {best_candidate['player_id']} больше не в очереди")
+            return jsonify({"match_found": False})
+        
+        # === ШАГ 5: Создаем матч ===
+        logger.info("ШАГ 5: Создаем матч...")
         now = datetime.utcnow()
         expires_at = now + timedelta(seconds=30)
         
@@ -923,12 +913,12 @@ def check_match():
         match_id = cursor.fetchone()['id']
         logger.info(f"Создан матч ID={match_id}")
         
-        # ИСПРАВЛЕНИЕ: удаляем только себя из очереди
+        # Удаляем только себя из очереди
         cursor.execute("""
             DELETE FROM search_queue 
             WHERE player_id = %s
         """, (player_id,))
-        logger.info(f"Игрок {player_id} удален из очереди (кандидат {best_candidate['player_id']} остается в очереди)")
+        logger.info(f"Игрок {player_id} удален из очереди")
         
         conn.commit()
         
@@ -1277,10 +1267,6 @@ def create_game():
         
         game_id = cursor.fetchone()[0]
         
-        # Удаляем матч (комментируем, чтобы второй игрок успел получить)
-        # cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
-        # logger.info(f"Матч {data['match_id']} удален")
-        
         conn.commit()
         logger.info(f"Игра создана, ID: {game_id}")
         
@@ -1321,9 +1307,8 @@ if __name__ == '__main__':
     print("   - matches: pending → accepted → не удаляются сразу")
     print("   - При отказе: удаляем матч и возвращаем в очередь")
     print("   - Добавлена проверка существующего матча в начале check_match")
-    print("   - ИСПРАВЛЕНА опечатка в SQL (FROM matches)")
-    print("   - ДОБАВЛЕН conn.commit() после UPDATE")
-    print("   - ИСПРАВЛЕНА ЛОГИКА УДАЛЕНИЯ: удаляем только себя из очереди")
+    print("   - УБРАНО ПРИНУДИТЕЛЬНОЕ ПРОСТАВЛЕНИЕ EXPIRED")
+    print("   - Добавлена проверка кандидата перед созданием матча")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
