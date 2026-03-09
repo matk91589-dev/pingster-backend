@@ -76,6 +76,15 @@ RANK_TO_VALUE = {
     'Global Elite': 2600
 }
 
+# Список рангов по порядку (индексы)
+RANK_LIST = [
+    'Silver 1', 'Silver 2', 'Silver 3', 'Silver 4', 'Silver Elite',
+    'Gold Nova 1', 'Gold Nova 2', 'Gold Nova 3', 'Gold Nova Master',
+    'Master Guardian 1', 'Master Guardian 2', 'Master Guardian Elite',
+    'Distinguished Master Guardian', 'Legendary Eagle', 'Legendary Eagle Master',
+    'Supreme Master First Class', 'Global Elite'
+]
+
 # ============================================
 # ГЛАВНАЯ
 # ============================================
@@ -850,7 +859,7 @@ def start_search():
         cursor.execute("""
             INSERT INTO search_queue 
             (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '5 minutes', 'waiting')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '1 minutes', 'waiting')
             RETURNING id
         """, (
             player_id, 
@@ -926,7 +935,7 @@ def match_status(match_id):
             conn.close()
 
 # ============================================
-# ПРОВЕРИТЬ МЭТЧ - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# ПРОВЕРИТЬ МЭТЧ - РОТАЦИОННАЯ ВЕРСИЯ
 # ============================================
 @app.route('/api/match/check', methods=['POST'])
 def check_match():
@@ -964,9 +973,6 @@ def check_match():
             AND status = 'pending' 
             AND expires_at < NOW()
         """, (player_id, player_id))
-        expired_count = cursor.rowcount
-        if expired_count > 0:
-            logger.info(f"Помечено {expired_count} истекших матчей для игрока {player_id}")
         
         # === ШАГ 0: Проверяем статус 'matched' в search_queue ===
         cursor.execute("""
@@ -983,7 +989,6 @@ def check_match():
             match_id = matched_row[0]
             logger.info(f"Найден существующий matched матч ID={match_id} для игрока {player_id}")
             
-            # Получаем данные матча
             cursor.execute("""
                 SELECT player1_id, player2_id, expires_at
                 FROM matches
@@ -995,7 +1000,6 @@ def check_match():
             if match:
                 opponent_id = match[1] if match[0] == player_id else match[0]
                 
-                # Получаем данные соперника
                 cursor.execute("""
                     SELECT nick, age, steam_link, faceit_link
                     FROM profiles WHERE player_id = %s
@@ -1004,7 +1008,6 @@ def check_match():
                 profile = cursor.fetchone()
                 
                 if profile:
-                    # Получаем дополнительные данные из search_queue
                     cursor.execute("""
                         SELECT style, rank, comment
                         FROM search_queue
@@ -1078,107 +1081,228 @@ def check_match():
                     "server_time": now.isoformat()
                 })
         
-        # === ШАГ 2: Ищем кандидата с блокировкой ===
-        
+        # === ШАГ 2: Получаем данные текущего игрока ===
         cursor.execute("""
-            SELECT id FROM search_queue 
-            WHERE player_id = %s AND status = 'waiting'
-            FOR UPDATE
-        """, (player_id,))
-        current_locked = cursor.fetchone()
-        
-        if not current_locked:
-            logger.debug("Игрок не в очереди или уже не waiting")
-            return jsonify({"match_found": False})
-        
-        cursor.execute("""
-            SELECT rating_bucket, mode FROM search_queue 
+            SELECT id, player_id, mode, rank, rating_bucket, style, age, joined_at
+            FROM search_queue 
             WHERE player_id = %s AND status = 'waiting' AND expires_at > NOW()
-            ORDER BY joined_at DESC LIMIT 1
+            ORDER BY joined_at DESC
+            LIMIT 1
+            FOR UPDATE
         """, (player_id,))
         
         current = cursor.fetchone()
         
         if not current:
-            logger.debug("Игрок не в очереди (повторная проверка)")
+            logger.debug("Игрок не в очереди или запись истекла")
             return jsonify({"match_found": False})
         
-        bucket, mode = current['rating_bucket'], current['mode']
-        min_bucket = bucket - 1
-        max_bucket = bucket + 1
+        # Парсим данные
+        current_mode = current['mode']
+        current_style = current['style']
+        current_age = current['age']
+        current_rank_value = int(current['rank']) if current['rank'] and current['rank'].isdigit() else 0
+        current_bucket = current['rating_bucket']
         
-        logger.debug(f"Поиск кандидатов: режим={mode}, бакет от {min_bucket} до {max_bucket}")
+        # Определяем диапазон поиска в зависимости от режима и стиля
+        min_bucket = None
+        max_bucket = None
+        
+        # FACEIT - всегда строгий диапазон
+        if current_mode == 'faceit':
+            min_bucket = current_bucket - 4  # ±400 ELO
+            max_bucket = current_bucket + 4
+            logger.debug(f"FACEIT режим: диапазон бакетов [{min_bucket}, {max_bucket}]")
+        
+        # PREMIER
+        elif current_mode == 'premier':
+            if current_style == 'tryhard':
+                # Tryhard: ±5000 рейтинга (бакеты по 1000 → ±5 бакетов)
+                min_bucket = current_bucket - 5
+                max_bucket = current_bucket + 5
+                logger.debug(f"PREMIER Tryhard: диапазон бакетов [{min_bucket}, {max_bucket}]")
+            else:
+                # Fan: без ограничений
+                logger.debug(f"PREMIER Fan: без ограничений по рейтингу")
+        
+        # MM PRIME / MM PUBLIC
+        elif current_mode in ['mm prime', 'mm public']:
+            if current_style == 'tryhard':
+                # Tryhard: ±3 ранга (переводим ранги в индексы)
+                # Получаем строковое значение ранга из search_queue
+                cursor.execute("""
+                    SELECT rank FROM search_queue 
+                    WHERE player_id = %s AND status = 'waiting'
+                    ORDER BY joined_at DESC LIMIT 1
+                """, (player_id,))
+                rank_data = cursor.fetchone()
+                if rank_data and rank_data['rank'] in RANK_LIST:
+                    current_rank_str = rank_data['rank']
+                    rank_index = RANK_LIST.index(current_rank_str)
+                    logger.debug(f"MM Tryhard: текущий ранг {current_rank_str} (индекс {rank_index})")
+                else:
+                    logger.debug(f"MM Tryhard: не удалось определить ранг")
+            else:
+                # Fan: без ограничений
+                logger.debug(f"MM Fan: без ограничений по рангу")
+        
+        # === ШАГ 3: Ищем ВСЕХ кандидатов в очереди (ротационный подход) ===
+        
+        # Базовый запрос для всех кандидатов кроме себя
+        base_query = """
+            SELECT 
+                sq.player_id, 
+                sq.style, 
+                sq.age, 
+                sq.rank,
+                sq.rating_bucket,
+                sq.comment,
+                p.nick,
+                p.steam_link,
+                p.faceit_link
+            FROM search_queue sq
+            JOIN profiles p ON sq.player_id = p.player_id
+            WHERE sq.mode = %s 
+            AND sq.status = 'waiting'
+            AND sq.player_id != %s
+            AND sq.expires_at > NOW()
+        """
+        
+        params = [current_mode, player_id]
+        
+        # Добавляем условия по диапазону в зависимости от режима
+        if current_mode == 'faceit':
+            base_query += " AND sq.rating_bucket BETWEEN %s AND %s"
+            params.extend([min_bucket, max_bucket])
+        
+        elif current_mode == 'premier':
+            if current_style == 'tryhard' and min_bucket is not None:
+                base_query += " AND sq.rating_bucket BETWEEN %s AND %s"
+                params.extend([min_bucket, max_bucket])
+            # Для fan без ограничений
+        
+        elif current_mode in ['mm prime', 'mm public']:
+            if current_style == 'tryhard':
+                # Для tryhard будем фильтровать в коде по индексам рангов
+                pass
+            # Для fan без ограничений
+        
+        # Выполняем запрос
+        cursor.execute(base_query, params)
+        all_candidates = cursor.fetchall()
+        
+        logger.debug(f"Найдено кандидатов до фильтрации: {len(all_candidates)}")
+        
+        # Фильтруем кандидатов для MM Tryhard по рангам
+        filtered_candidates = []
+        
+        if current_mode in ['mm prime', 'mm public'] and current_style == 'tryhard' and 'rank_index' in locals():
+            rank_index = locals()['rank_index']
+            
+            for cand in all_candidates:
+                cand_rank = cand['rank']
+                if cand_rank in RANK_LIST:
+                    cand_index = RANK_LIST.index(cand_rank)
+                    if abs(cand_index - rank_index) <= 3:  # ±3 ранга
+                        filtered_candidates.append(cand)
+        else:
+            filtered_candidates = list(all_candidates)
+        
+        logger.debug(f"Кандидатов после фильтрации: {len(filtered_candidates)}")
+        
+        if not filtered_candidates:
+            logger.debug("Нет подходящих кандидатов")
+            return jsonify({"match_found": False})
+        
+        # === ШАГ 4: Сортируем кандидатов по приоритетам ===
+        
+        # Разделяем на свой стиль и другой стиль
+        same_style = []
+        other_style = []
+        
+        for cand in filtered_candidates:
+            if cand['style'] == current_style:
+                same_style.append(cand)
+            else:
+                other_style.append(cand)
+        
+        # Функция для вычисления score
+        def calculate_score(candidate):
+            cand_rating = int(candidate['rank']) if candidate['rank'] and candidate['rank'].isdigit() else 0
+            cand_age = candidate['age'] or 0
+            
+            # Разница в рейтинге
+            if current_mode == 'faceit' or current_mode == 'premier':
+                rating_diff = abs(current_rank_value - cand_rating)
+            else:
+                # Для MM рангов используем индексы
+                current_rank_str = current['rank'] if current['rank'] in RANK_LIST else RANK_LIST[0]
+                cand_rank_str = candidate['rank'] if candidate['rank'] in RANK_LIST else RANK_LIST[0]
+                current_idx = RANK_LIST.index(current_rank_str)
+                cand_idx = RANK_LIST.index(cand_rank_str)
+                rating_diff = abs(current_idx - cand_idx) * 100  # Умножаем для веса
+            
+            age_diff = abs(current_age - cand_age) if cand_age else 0
+            
+            # Итоговый score (чем меньше, тем лучше)
+            return rating_diff + age_diff * 100
+        
+        # Сортируем обе группы
+        same_style.sort(key=calculate_score)
+        other_style.sort(key=calculate_score)
+        
+        # Объединяем: сначала свой стиль, потом другой
+        sorted_candidates = same_style + other_style
+        
+        # Берем лучшего кандидата
+        best_candidate = sorted_candidates[0]
+        
+        logger.info(f"Выбран кандидат: player_id={best_candidate['player_id']}, style={best_candidate['style']}, score={calculate_score(best_candidate)}")
+        
+        # === ШАГ 5: Создаем матч ===
+        
+        now = datetime.utcnow()
+        expires_at = now + timedelta(seconds=30)
         
         cursor.execute("""
-            SELECT player_id, style, age, rank, comment
-            FROM search_queue 
-            WHERE mode = %s 
-            AND status = 'waiting'
-            AND rating_bucket BETWEEN %s AND %s
-            AND player_id != %s
-            AND expires_at > NOW()
-            ORDER BY joined_at
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-        """, (mode, min_bucket, max_bucket, player_id))
+            INSERT INTO matches 
+            (player1_id, player2_id, mode, compatibility_score, created_at, expires_at, status)
+            VALUES (%s, %s, %s, 0, NOW(), %s, 'pending')
+            RETURNING id
+        """, (player_id, best_candidate['player_id'], current_mode, expires_at))
         
-        candidate = cursor.fetchone()
+        match_id = cursor.fetchone()['id']
+        logger.info(f"Создан матч ID: {match_id}, истекает: {expires_at}")
         
-        if candidate:
-            logger.info(f"Найден кандидат: player_id={candidate['player_id']}")
-            
-            # ИСПРАВЛЕНИЕ: Используем ОДИН timestamp для всего
-            now = datetime.utcnow()
-            expires_at = now + timedelta(seconds=30)
-            
-            cursor.execute("""
-                INSERT INTO matches 
-                (player1_id, player2_id, mode, compatibility_score, created_at, expires_at, status)
-                VALUES (%s, %s, %s, 0, NOW(), %s, 'pending')
-                RETURNING id
-            """, (player_id, candidate['player_id'], mode, expires_at))
-            
-            match_id = cursor.fetchone()['id']
-            logger.info(f"Создан матч ID: {match_id}, истекает: {expires_at}")
-            
-            cursor.execute("""
-                UPDATE search_queue 
-                SET status = 'matched', match_id = %s
-                WHERE player_id IN (%s, %s)
-            """, (match_id, player_id, candidate['player_id']))
-            
-            conn.commit()
-            
-            cursor.execute("""
-                SELECT nick, age, steam_link, faceit_link
-                FROM profiles WHERE player_id = %s
-            """, (candidate['player_id'],))
-            
-            profile = cursor.fetchone()
-            
-            if profile:
-                opponent = {
-                    "player_id": candidate['player_id'],
-                    "nick": profile['nick'],
-                    "age": profile['age'],
-                    "style": candidate['style'] if candidate['style'] else "fan",
-                    "rating": candidate['rank'] if candidate['rank'] else "0",
-                    "steam_link": profile['steam_link'] if profile['steam_link'] else "Не указана",
-                    "faceit_link": profile['faceit_link'] if profile['faceit_link'] else "Не указана",
-                    "comment": candidate['comment'] if candidate['comment'] else "Нет комментария"
-                }
-                
-                return jsonify({
-                    "match_found": True,
-                    "match_id": match_id,
-                    "opponent": opponent,
-                    "your_response": None,
-                    "expires_at": expires_at.isoformat(),
-                    "server_time": now.isoformat()
-                })
+        # Обновляем статус обоих игроков в очереди
+        cursor.execute("""
+            UPDATE search_queue 
+            SET status = 'matched', match_id = %s
+            WHERE player_id IN (%s, %s) AND status = 'waiting'
+        """, (match_id, player_id, best_candidate['player_id']))
         
-        logger.debug("Кандидатов не найдено")
-        return jsonify({"match_found": False})
+        conn.commit()
+        
+        # Формируем данные оппонента для ответа
+        opponent = {
+            "player_id": best_candidate['player_id'],
+            "nick": best_candidate['nick'],
+            "age": best_candidate['age'],
+            "style": best_candidate['style'],
+            "rating": best_candidate['rank'] if best_candidate['rank'] else "0",
+            "steam_link": best_candidate['steam_link'] if best_candidate['steam_link'] else "Не указана",
+            "faceit_link": best_candidate['faceit_link'] if best_candidate['faceit_link'] else "Не указана",
+            "comment": best_candidate['comment'] if best_candidate['comment'] else "Нет комментария"
+        }
+        
+        return jsonify({
+            "match_found": True,
+            "match_id": match_id,
+            "opponent": opponent,
+            "your_response": None,
+            "expires_at": expires_at.isoformat(),
+            "server_time": now.isoformat()
+        })
     
     except Exception as e:
         logger.error(f"ОШИБКА в check_match: {e}", exc_info=True)
@@ -1500,18 +1624,16 @@ def vote_player():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("🔥 Pingster backend с бакетированием запускается...")
-    print("🚀 Новая архитектура:")
-    print("   - search_queue: waiting → matched → (waiting при отказе) → удаление при создании игры")
-    print("   - FOR UPDATE SKIP LOCKED для защиты от race condition")
-    print("   - Единое время истечения для обоих игроков")
-    print("   - Синхронизация времени через server_time")
-    print("   - Сброс ответов и возврат в очередь при reject/expire")
-    print("   - Проверка активного матча перед поиском")
-    print("   - Новый эндпоинт /api/match/status/<match_id> для проверки both_accepted")
-    print("   - АВТОМАТИЧЕСКАЯ ОЧИСТКА истекших матчей")
-    print("   - ПРОВЕРКА СТАТУСА 'MATCHED' В ОЧЕРЕДИ")
-    print("   - СИНХРОНИЗАЦИЯ ВРЕМЕНИ expires_at И server_time")
+    print("🔥 Pingster backend с РОТАЦИОННЫМ МЭТЧМЕЙКИНГОМ запускается...")
+    print("🚀 НОВАЯ АРХИТЕКТУРА:")
+    print("   - Ротационный подбор (каждый новый проверяет всех)")
+    print("   - Приоритет стиля (сначала свой стиль, потом другой)")
+    print("   - Умная формула: |rating_diff| + |age_diff|*100")
+    print("   - FACEIT: ±400 ELO (всегда)")
+    print("   - PREMIER Fan: без ограничений")
+    print("   - PREMIER Tryhard: ±5000")
+    print("   - MM Fan: без ограничений")
+    print("   - MM Tryhard: ±3 ранга")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
