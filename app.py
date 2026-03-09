@@ -751,6 +751,7 @@ def check_match():
             AND status = 'pending' 
             AND expires_at < NOW()
         """, (player_id, player_id))
+        conn.commit()  # ВАЖНО: коммитим изменения
         
         # === ШАГ 0: Проверяем существующий матч ===
         logger.info("ШАГ 0: Проверяем существующий матч...")
@@ -766,7 +767,7 @@ def check_match():
         existing_match = cursor.fetchone()
         
         if existing_match:
-            logger.info(f"✅ Найден существующий матч ID={existing_match['id']}, статус={existing_match['status']}")
+            logger.info(f"Найден существующий матч ID={existing_match['id']}, статус={existing_match['status']}")
             
             other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
             logger.info(f"Соперник ID: {other_id}")
@@ -802,7 +803,7 @@ def check_match():
                     "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
                 }
                 
-                logger.info(f"✅ Возвращаем существующий матч для игрока {player_id}")
+                logger.info(f"Возвращаем существующий матч для игрока {player_id}")
                 return jsonify({
                     "match_found": True,
                     "match_id": existing_match['id'],
@@ -811,9 +812,20 @@ def check_match():
                     "server_time": datetime.utcnow().isoformat()
                 })
             else:
-                logger.error(f"❌ Профиль соперника {other_id} не найден")
+                logger.error(f"Профиль соперника {other_id} не найден")
         else:
-            logger.info("❌ Существующий матч не найден")
+            logger.info("Существующий матч не найден")
+            
+            # Отладочный запрос - покажем все матчи игрока
+            cursor.execute("""
+                SELECT id, player1_id, player2_id, status, expires_at
+                FROM matches
+                WHERE player1_id = %s OR player2_id = %s
+                ORDER BY id DESC
+                LIMIT 5
+            """, (player_id, player_id))
+            debug_matches = cursor.fetchall()
+            logger.info(f"Все последние матчи игрока: {debug_matches}")
         
         # === ШАГ 1: Получаем данные текущего игрока из очереди ===
         logger.info("ШАГ 1: Проверяем очередь поиска...")
@@ -828,10 +840,10 @@ def check_match():
         current = cursor.fetchone()
         
         if not current:
-            logger.info(f"❌ Игрок {player_id} не в очереди")
+            logger.info(f"Игрок {player_id} не в очереди")
             return jsonify({"match_found": False})
         
-        logger.info(f"✅ Игрок {player_id} в очереди, режим {current['mode']}")
+        logger.info(f"Игрок {player_id} в очереди, режим {current['mode']}")
         
         current_mode = current['mode']
         current_style = current['style']
@@ -872,7 +884,7 @@ def check_match():
         logger.info(f"Кандидатов после фильтрации: {len(candidates)}")
         
         if not candidates:
-            logger.info("❌ Нет подходящих кандидатов")
+            logger.info("Нет подходящих кандидатов")
             return jsonify({"match_found": False})
         
         # === ШАГ 3: Сортируем кандидатов ===
@@ -894,7 +906,7 @@ def check_match():
         
         best_candidate = (same_style + other_style)[0]
         best_score = calculate_score(current, best_candidate, current_mode)
-        logger.info(f"✅ Лучший кандидат: {best_candidate['player_id']}, score={best_score}")
+        logger.info(f"Лучший кандидат: {best_candidate['player_id']}, score={best_score}")
         
         # === ШАГ 4: Создаем матч и удаляем из очереди ===
         logger.info("ШАГ 4: Создаем матч...")
@@ -909,14 +921,14 @@ def check_match():
         """, (player_id, best_candidate['player_id'], current_mode, expires_at))
         
         match_id = cursor.fetchone()['id']
-        logger.info(f"✅ Создан матч ID={match_id}")
+        logger.info(f"Создан матч ID={match_id}")
         
         # Удаляем обоих из очереди
         cursor.execute("""
             DELETE FROM search_queue 
             WHERE player_id IN (%s, %s)
         """, (player_id, best_candidate['player_id']))
-        logger.info(f"✅ Игроки {player_id} и {best_candidate['player_id']} удалены из очереди")
+        logger.info(f"Игроки {player_id} и {best_candidate['player_id']} удалены из очереди")
         
         conn.commit()
         
@@ -1061,14 +1073,14 @@ def respond_match():
         
         # Оба приняли
         if responses['player1_response'] == 'accept' and responses['player2_response'] == 'accept':
-            logger.info("✅ Оба приняли матч")
+            logger.info("Оба приняли матч")
             cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
             conn.commit()
             return jsonify({"status": "accepted", "both_accepted": True})
         
         # Кто-то отклонил
         elif responses['player1_response'] == 'reject' or responses['player2_response'] == 'reject':
-            logger.info("❌ Матч отклонен")
+            logger.info("Матч отклонен")
             # Удаляем матч
             cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
             
@@ -1122,7 +1134,7 @@ def respond_match():
         
         # Один ответил, второй ждем
         else:
-            logger.info("⏳ Ожидаем ответа второго игрока")
+            logger.info("Ожидаем ответа второго игрока")
             conn.commit()
             time_left = 0
             if responses['expires_at']:
@@ -1243,7 +1255,7 @@ def create_game():
             return jsonify({"error": "Failed to create chat"}), 500
         
         chat_id = chat_result['result']['id']
-        logger.info(f"✅ Чат создан, ID: {chat_id}")
+        logger.info(f"Чат создан, ID: {chat_id}")
         
         # Отправляем приветствие
         welcome_text = f"""** МАТЧ создан ! **
@@ -1262,7 +1274,7 @@ def create_game():
         }
         
         requests.post(send_msg_url, json=msg_data)
-        logger.info("✅ Приветствие отправлено")
+        logger.info("Приветствие отправлено")
         
         # Создаем пригласительную ссылку
         invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
@@ -1276,7 +1288,7 @@ def create_game():
         invite_result = invite_response.json()
         
         chat_link = invite_result['result']['invite_link'] if invite_result.get('ok') else f"https://t.me/c/{str(chat_id)[4:]}"
-        logger.info(f"✅ Ссылка-приглашение: {chat_link}")
+        logger.info(f"Ссылка-приглашение: {chat_link}")
         
         # Сохраняем в БД
         cursor.execute("""
@@ -1287,12 +1299,12 @@ def create_game():
         
         game_id = cursor.fetchone()[0]
         
-        # Удаляем матч
-        cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
-        logger.info(f"✅ Матч {data['match_id']} удален")
+        # Удаляем матч (комментируем, чтобы второй игрок успел получить)
+        # cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
+        # logger.info(f"Матч {data['match_id']} удален")
         
         conn.commit()
-        logger.info(f"✅ Игра создана, ID: {game_id}")
+        logger.info(f"Игра создана, ID: {game_id}")
         
         return jsonify({
             "status": "ok",
@@ -1316,8 +1328,8 @@ def create_game():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("🔥 Pingster backend с РОТАЦИОННЫМ МЭТЧМЕЙКИНГОМ и ЧАТАМИ запускается...")
-    print("🚀 НОВАЯ АРХИТЕКТУРА:")
+    print("Pingster backend с РОТАЦИОННЫМ МЭТЧМЕЙКИНГОМ и ЧАТАМИ запускается...")
+    print("НОВАЯ АРХИТЕКТУРА:")
     print("   - Ротационный подбор (каждый новый проверяет всех)")
     print("   - Приоритет стиля (сначала свой стиль, потом другой)")
     print("   - Умная формула: |rating_diff| + |age_diff|*100")
@@ -1328,10 +1340,11 @@ if __name__ == '__main__':
     print("   - MM Tryhard: ±3 ранга")
     print("   - Telegram чаты создаются автоматически!")
     print("   - search_queue: только waiting (без status/match_id)")
-    print("   - matches: pending → accepted → удаление после создания чата")
+    print("   - matches: pending → accepted → не удаляются сразу")
     print("   - При отказе: удаляем матч и возвращаем в очередь")
     print("   - Добавлена проверка существующего матча в начале check_match")
-    print("   - ПОДРОБНОЕ ЛОГИРОВАНИЕ всех шагов")
+    print("   - ИСПРАВЛЕНА опечатка в SQL (FROM matches)")
+    print("   - ДОБАВЛЕН conn.commit() после UPDATE")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
