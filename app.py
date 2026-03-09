@@ -11,6 +11,7 @@ import psycopg2.extras
 import random
 from datetime import datetime, timedelta
 import logging
+import requests  # для работы с Telegram API
 
 # Настройка логирования
 logging.basicConfig(
@@ -28,6 +29,9 @@ DB_NAME = os.getenv("DB_NAME", "pingster_db")
 DB_USER = os.getenv("DB_USER", "gen_user")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "{,@~:5my>jvOAj")   # Срочно сменить!
 DB_PORT = os.getenv("DB_PORT", 5432)
+
+# Токен бота для создания чатов
+BOT_TOKEN = "8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8"
 
 def get_db():
     logger.debug("Подключение к базе данных...")
@@ -1495,7 +1499,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# СОЗДАТЬ ИГРУ
+# СОЗДАТЬ ИГРУ И ЧАТ В TELEGRAM
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1518,11 +1522,11 @@ def create_game():
         conn = get_db()
         cursor = conn.cursor()
         
+        # Получаем данные матча
         cursor.execute("""
-            UPDATE matches
-            SET status = 'accepted'
+            SELECT player1_id, player2_id, mode
+            FROM matches
             WHERE id = %s AND status = 'pending'
-            RETURNING player1_id, player2_id
         """, (data['match_id'],))
         
         match = cursor.fetchone()
@@ -1531,17 +1535,105 @@ def create_game():
             logger.error(f"Match not found or not pending: {data['match_id']}")
             return jsonify({"error": "Match not found or not pending"}), 404
         
-        chat_id = random.randint(1000000, 9999999)
-        chat_link = f"https://t.me/+{random.randint(1000000, 9999999)}"
+        player1_id = match[0]
+        player2_id = match[1]
         
+        # Получаем telegram_id игроков
+        cursor.execute("""
+            SELECT telegram_id FROM users WHERE player_id = %s
+        """, (player1_id,))
+        user1 = cursor.fetchone()
+        
+        cursor.execute("""
+            SELECT telegram_id FROM users WHERE player_id = %s
+        """, (player2_id,))
+        user2 = cursor.fetchone()
+        
+        if not user1 or not user2:
+            logger.error("Users not found")
+            return jsonify({"error": "Users not found"}), 404
+        
+        telegram_id1 = user1[0]
+        telegram_id2 = user2[0]
+        
+        # Получаем ники игроков
+        cursor.execute("""
+            SELECT nick FROM profiles WHERE player_id = %s
+        """, (player1_id,))
+        nick1 = cursor.fetchone()[0]
+        
+        cursor.execute("""
+            SELECT nick FROM profiles WHERE player_id = %s
+        """, (player2_id,))
+        nick2 = cursor.fetchone()[0]
+        
+        # СОЗДАЕМ ЧАТ В TELEGRAM
+        import requests
+        
+        # 1. Создаем группу
+        create_chat_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createGroupChat"
+        chat_data = {
+            "title": f"Pingster Match #{data['match_id']}",
+            "user_ids": [telegram_id1, telegram_id2]
+        }
+        
+        chat_response = requests.post(create_chat_url, json=chat_data)
+        chat_result = chat_response.json()
+        
+        if not chat_result.get('ok'):
+            logger.error(f"Failed to create Telegram chat: {chat_result}")
+            return jsonify({"error": "Failed to create chat"}), 500
+        
+        chat_id = chat_result['result']['id']
+        
+        # 2. Отправляем приветственное сообщение
+        welcome_text = f"""** МАТЧ создан ! **
+
+Привет, {nick1} и {nick2}!
+Это ваш временный чат для игры.
+
+Здесь вы можете договориться и кинуть приглашение в игру.
+Чат самоуничтожится через час."""
+
+        send_msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        msg_data = {
+            "chat_id": chat_id,
+            "text": welcome_text,
+            "parse_mode": "Markdown"
+        }
+        
+        requests.post(send_msg_url, json=msg_data)
+        
+        # 3. Создаем пригласительную ссылку
+        invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+        invite_data = {
+            "chat_id": chat_id,
+            "member_limit": 2,
+            "expire_date": int((datetime.utcnow() + timedelta(hours=1)).timestamp())
+        }
+        
+        invite_response = requests.post(invite_url, json=invite_data)
+        invite_result = invite_response.json()
+        
+        chat_link = invite_result['result']['invite_link'] if invite_result.get('ok') else f"https://t.me/c/{str(chat_id)[4:]}"
+        
+        # 4. Обновляем статус матча
+        cursor.execute("""
+            UPDATE matches
+            SET status = 'accepted'
+            WHERE id = %s
+        """, (data['match_id'],))
+        
+        # 5. Сохраняем информацию о чате в БД
         cursor.execute("""
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at)
             VALUES (%s, %s, %s, %s, %s, 'active', NOW())
             RETURNING id
-        """, (data['match_id'], match[0], match[1], chat_id, chat_link))
+        """, (data['match_id'], player1_id, player2_id, chat_id, chat_link))
         
         game_id = cursor.fetchone()[0]
         
+        # 6. Удаляем из очереди поиска
         cursor.execute("DELETE FROM search_queue WHERE match_id = %s", (data['match_id'],))
         
         conn.commit()
@@ -1624,7 +1716,7 @@ def vote_player():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("🔥 Pingster backend с РОТАЦИОННЫМ МЭТЧМЕЙКИНГОМ запускается...")
+    print("🔥 Pingster backend с РОТАЦИОННЫМ МЭТЧМЕЙКИНГОМ и ЧАТАМИ запускается...")
     print("🚀 НОВАЯ АРХИТЕКТУРА:")
     print("   - Ротационный подбор (каждый новый проверяет всех)")
     print("   - Приоритет стиля (сначала свой стиль, потом другой)")
@@ -1634,6 +1726,7 @@ if __name__ == '__main__':
     print("   - PREMIER Tryhard: ±5000")
     print("   - MM Fan: без ограничений")
     print("   - MM Tryhard: ±3 ранга")
+    print("   - Telegram чаты создаются автоматически!")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
