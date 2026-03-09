@@ -794,7 +794,7 @@ def start_search():
         if data.get('age') and (data['age'] < 16 or data['age'] > 100):
             return jsonify({"error": "Возраст должен быть от 16 до 100 лет"}), 400
         
-        # ИСПРАВЛЕНИЕ: Помечаем истекшие матчи этого игрока
+        # Помечаем истекшие матчи этого игрока
         cursor.execute("""
             UPDATE matches 
             SET status = 'expired' 
@@ -882,7 +882,7 @@ def start_search():
             conn.close()
 
 # ============================================
-# НОВЫЙ ЭНДПОИНТ: СТАТУС МЭТЧА
+# СТАТУС МЭТЧА
 # ============================================
 @app.route('/api/match/status/<int:match_id>', methods=['GET'])
 def match_status(match_id):
@@ -956,7 +956,7 @@ def check_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
-        # ИСПРАВЛЕНИЕ: Помечаем истекшие матчи этого игрока
+        # Помечаем истекшие матчи этого игрока
         cursor.execute("""
             UPDATE matches 
             SET status = 'expired' 
@@ -968,7 +968,7 @@ def check_match():
         if expired_count > 0:
             logger.info(f"Помечено {expired_count} истекших матчей для игрока {player_id}")
         
-        # === НОВЫЙ ШАГ 0: Проверяем статус 'matched' в search_queue ===
+        # === ШАГ 0: Проверяем статус 'matched' в search_queue ===
         cursor.execute("""
             SELECT match_id
             FROM search_queue
@@ -1025,14 +1025,14 @@ def check_match():
                         "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
                     }
                     
-                    server_time = datetime.utcnow()
+                    now = datetime.utcnow()
                     
                     return jsonify({
                         "match_found": True,
                         "match_id": match_id,
                         "opponent": opponent,
                         "expires_at": match[2].isoformat() if match[2] else None,
-                        "server_time": server_time.isoformat()
+                        "server_time": now.isoformat()
                     })
         
         # === ШАГ 1: Проверяем существующий pending матч ===
@@ -1068,14 +1068,14 @@ def check_match():
                     "faceit_link": profile['faceit_link'] if profile['faceit_link'] else "Не указана"
                 }
                 
-                server_time = datetime.utcnow()
+                now = datetime.utcnow()
                 
                 return jsonify({
                     "match_found": True,
                     "match_id": existing_match['id'],
                     "opponent": opponent,
                     "expires_at": existing_match['expires_at'].isoformat() if existing_match['expires_at'] else None,
-                    "server_time": server_time.isoformat()
+                    "server_time": now.isoformat()
                 })
         
         # === ШАГ 2: Ищем кандидата с блокировкой ===
@@ -1127,8 +1127,9 @@ def check_match():
         if candidate:
             logger.info(f"Найден кандидат: player_id={candidate['player_id']}")
             
-            # ВАЖНО: expires_at вычисляется ОДИН раз и одинаков для обоих игроков
-            expires_at = datetime.utcnow() + timedelta(seconds=30)
+            # ИСПРАВЛЕНИЕ: Используем ОДИН timestamp для всего
+            now = datetime.utcnow()
+            expires_at = now + timedelta(seconds=30)
             
             cursor.execute("""
                 INSERT INTO matches 
@@ -1167,15 +1168,13 @@ def check_match():
                     "comment": candidate['comment'] if candidate['comment'] else "Нет комментария"
                 }
                 
-                server_time = datetime.utcnow()
-                
                 return jsonify({
                     "match_found": True,
                     "match_id": match_id,
                     "opponent": opponent,
                     "your_response": None,
                     "expires_at": expires_at.isoformat(),
-                    "server_time": server_time.isoformat()
+                    "server_time": now.isoformat()
                 })
         
         logger.debug("Кандидатов не найдено")
@@ -1193,7 +1192,7 @@ def check_match():
             conn.close()
 
 # ============================================
-# ОТВЕТИТЬ НА МЭТЧ - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# ОТВЕТИТЬ НА МЭТЧ
 # ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
@@ -1372,7 +1371,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# СОЗДАТЬ ИГРУ - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# СОЗДАТЬ ИГРУ
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1512,6 +1511,7 @@ if __name__ == '__main__':
     print("   - Новый эндпоинт /api/match/status/<match_id> для проверки both_accepted")
     print("   - АВТОМАТИЧЕСКАЯ ОЧИСТКА истекших матчей")
     print("   - ПРОВЕРКА СТАТУСА 'MATCHED' В ОЧЕРЕДИ")
+    print("   - СИНХРОНИЗАЦИЯ ВРЕМЕНИ expires_at И server_time")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
