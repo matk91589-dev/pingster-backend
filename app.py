@@ -641,6 +641,8 @@ def start_search():
         if not player_id:
             return jsonify({"error": "User not found"}), 404
         
+        logger.info(f"start_search для игрока {player_id}, режим {data.get('mode')}")
+        
         if data.get('age') and (data['age'] < 16 or data['age'] > 100):
             return jsonify({"error": "Возраст должен быть от 16 до 100 лет"}), 400
         
@@ -652,6 +654,9 @@ def start_search():
             AND status = 'pending' 
             AND expires_at < NOW()
         """, (player_id, player_id))
+        expired_count = cursor.rowcount
+        if expired_count > 0:
+            logger.info(f"Помечено {expired_count} истекших матчей")
         
         # Проверяем активный матч
         cursor.execute("""
@@ -661,6 +666,7 @@ def start_search():
             AND expires_at > NOW()
         """, (player_id, player_id))
         if cursor.fetchone():
+            logger.warning(f"Игрок {player_id} уже в активном матче")
             return jsonify({"error": "Уже в матче"}), 400
         
         mode = data.get('mode', '').lower()
@@ -698,11 +704,14 @@ def start_search():
             data.get('comment')
         ))
         
+        queue_id = cursor.fetchone()[0]
+        logger.info(f"Игрок {player_id} добавлен в очередь (ID: {queue_id})")
+        
         conn.commit()
         return jsonify({"status": "searching", "message": "В очереди"})
     
     except Exception as e:
-        logger.error(f"ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА в start_search: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -726,7 +735,10 @@ def check_match():
     try:
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
+            logger.error(f"User not found for telegram_id: {data['telegram_id']}")
             return jsonify({"error": "User not found"}), 404
+        
+        logger.info(f"check_match для игрока {player_id}")
         
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -740,7 +752,8 @@ def check_match():
             AND expires_at < NOW()
         """, (player_id, player_id))
         
-        # === ШАГ 0: Проверяем существующий матч (ВНЕ ЗАВИСИМОСТИ ОТ ОЧЕРЕДИ) ===
+        # === ШАГ 0: Проверяем существующий матч ===
+        logger.info("ШАГ 0: Проверяем существующий матч...")
         cursor.execute("""
             SELECT id, player1_id, player2_id, expires_at, status
             FROM matches
@@ -753,9 +766,10 @@ def check_match():
         existing_match = cursor.fetchone()
         
         if existing_match:
-            logger.info(f"Найден существующий матч ID={existing_match['id']} для игрока {player_id}")
+            logger.info(f"✅ Найден существующий матч ID={existing_match['id']}, статус={existing_match['status']}")
             
             other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
+            logger.info(f"Соперник ID: {other_id}")
             
             # Получаем данные соперника из profiles
             cursor.execute("""
@@ -788,6 +802,7 @@ def check_match():
                     "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
                 }
                 
+                logger.info(f"✅ Возвращаем существующий матч для игрока {player_id}")
                 return jsonify({
                     "match_found": True,
                     "match_id": existing_match['id'],
@@ -795,8 +810,13 @@ def check_match():
                     "expires_at": existing_match['expires_at'].isoformat(),
                     "server_time": datetime.utcnow().isoformat()
                 })
+            else:
+                logger.error(f"❌ Профиль соперника {other_id} не найден")
+        else:
+            logger.info("❌ Существующий матч не найден")
         
         # === ШАГ 1: Получаем данные текущего игрока из очереди ===
+        logger.info("ШАГ 1: Проверяем очередь поиска...")
         cursor.execute("""
             SELECT * FROM search_queue 
             WHERE player_id = %s AND expires_at > NOW()
@@ -808,7 +828,10 @@ def check_match():
         current = cursor.fetchone()
         
         if not current:
+            logger.info(f"❌ Игрок {player_id} не в очереди")
             return jsonify({"match_found": False})
+        
+        logger.info(f"✅ Игрок {player_id} в очереди, режим {current['mode']}")
         
         current_mode = current['mode']
         current_style = current['style']
@@ -818,8 +841,10 @@ def check_match():
         
         # Определяем диапазон поиска
         min_bucket, max_bucket = get_range_buckets(current_mode, current_style, current_bucket)
+        logger.info(f"Диапазон бакетов: {min_bucket} - {max_bucket}")
         
         # === ШАГ 2: Ищем кандидатов ===
+        logger.info("ШАГ 2: Ищем кандидатов...")
         query = """
             SELECT 
                 sq.*,
@@ -840,14 +865,18 @@ def check_match():
         
         cursor.execute(query, params)
         candidates = cursor.fetchall()
+        logger.info(f"Найдено кандидатов до фильтрации: {len(candidates)}")
         
         # Фильтруем по рангам для MM Tryhard
         candidates = filter_candidates_by_rank(candidates, current_rank, current_mode, current_style)
+        logger.info(f"Кандидатов после фильтрации: {len(candidates)}")
         
         if not candidates:
+            logger.info("❌ Нет подходящих кандидатов")
             return jsonify({"match_found": False})
         
         # === ШАГ 3: Сортируем кандидатов ===
+        logger.info("ШАГ 3: Сортируем кандидатов...")
         same_style = []
         other_style = []
         
@@ -857,12 +886,18 @@ def check_match():
             else:
                 other_style.append(cand)
         
+        logger.info(f"Кандидатов с таким же стилем: {len(same_style)}")
+        logger.info(f"Кандидатов с другим стилем: {len(other_style)}")
+        
         same_style.sort(key=lambda x: calculate_score(current, x, current_mode))
         other_style.sort(key=lambda x: calculate_score(current, x, current_mode))
         
         best_candidate = (same_style + other_style)[0]
+        best_score = calculate_score(current, best_candidate, current_mode)
+        logger.info(f"✅ Лучший кандидат: {best_candidate['player_id']}, score={best_score}")
         
         # === ШАГ 4: Создаем матч и удаляем из очереди ===
+        logger.info("ШАГ 4: Создаем матч...")
         now = datetime.utcnow()
         expires_at = now + timedelta(seconds=30)
         
@@ -874,12 +909,14 @@ def check_match():
         """, (player_id, best_candidate['player_id'], current_mode, expires_at))
         
         match_id = cursor.fetchone()['id']
+        logger.info(f"✅ Создан матч ID={match_id}")
         
         # Удаляем обоих из очереди
         cursor.execute("""
             DELETE FROM search_queue 
             WHERE player_id IN (%s, %s)
         """, (player_id, best_candidate['player_id']))
+        logger.info(f"✅ Игроки {player_id} и {best_candidate['player_id']} удалены из очереди")
         
         conn.commit()
         
@@ -933,7 +970,10 @@ def match_status(match_id):
         match = cursor.fetchone()
         
         if not match:
+            logger.info(f"Матч {match_id} не найден")
             return jsonify({"status": "not_found"})
+        
+        logger.info(f"Статус матча {match_id}: {match['status']}")
         
         if match['player1_response'] == 'accept' and match['player2_response'] == 'accept':
             return jsonify({
@@ -971,6 +1011,8 @@ def respond_match():
         if not player_id:
             return jsonify({"error": "User not found"}), 404
         
+        logger.info(f"respond_match: игрок {player_id}, матч {data['match_id']}, ответ {data['response']}")
+        
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
@@ -982,11 +1024,15 @@ def respond_match():
         match = cursor.fetchone()
         
         if not match:
+            logger.error(f"Матч {data['match_id']} не найден")
             return jsonify({"error": "Match not found"}), 404
+        
+        logger.info(f"Матч найден: статус {match['status']}, истекает {match['expires_at']}")
         
         # Проверяем не истекло ли время
         current_time = datetime.utcnow()
         if match['expires_at'] and current_time > match['expires_at']:
+            logger.warning(f"Матч {data['match_id']} истек")
             cursor.execute("UPDATE matches SET status = 'expired' WHERE id = %s", (data['match_id'],))
             conn.commit()
             return jsonify({"status": "expired", "message": "Время истекло"})
@@ -994,15 +1040,20 @@ def respond_match():
         # Обновляем ответ игрока
         if str(match['player1_id']) == str(player_id):
             if match['player1_response'] is not None:
+                logger.warning(f"Игрок {player_id} уже ответил")
                 return jsonify({"status": "already_responded"})
             cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s",
                           (data['response'], data['match_id']))
+            logger.info(f"Обновлен ответ player1: {data['response']}")
         elif str(match['player2_id']) == str(player_id):
             if match['player2_response'] is not None:
+                logger.warning(f"Игрок {player_id} уже ответил")
                 return jsonify({"status": "already_responded"})
             cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s",
                           (data['response'], data['match_id']))
+            logger.info(f"Обновлен ответ player2: {data['response']}")
         else:
+            logger.error(f"Игрок {player_id} не участвует в матче {data['match_id']}")
             return jsonify({"error": "User not in this match"}), 403
         
         cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", (data['match_id'],))
@@ -1010,12 +1061,14 @@ def respond_match():
         
         # Оба приняли
         if responses['player1_response'] == 'accept' and responses['player2_response'] == 'accept':
+            logger.info("✅ Оба приняли матч")
             cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
             conn.commit()
             return jsonify({"status": "accepted", "both_accepted": True})
         
         # Кто-то отклонил
         elif responses['player1_response'] == 'reject' or responses['player2_response'] == 'reject':
+            logger.info("❌ Матч отклонен")
             # Удаляем матч
             cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
             
@@ -1051,6 +1104,7 @@ def respond_match():
                     match['player1_id'], p1_data[0], p1_data[1], p1_data[2], p1_data[3], p1_data[4], 
                     p1_data[5], p1_data[6], p1_data[7], now, expires_at
                 ))
+                logger.info(f"Игрок {match['player1_id']} возвращен в очередь")
             
             if p2_data:
                 cursor.execute("""
@@ -1061,12 +1115,14 @@ def respond_match():
                     match['player2_id'], p2_data[0], p2_data[1], p2_data[2], p2_data[3], p2_data[4], 
                     p2_data[5], p2_data[6], p2_data[7], now, expires_at
                 ))
+                logger.info(f"Игрок {match['player2_id']} возвращен в очередь")
             
             conn.commit()
             return jsonify({"status": "rejected", "both_accepted": False})
         
         # Один ответил, второй ждем
         else:
+            logger.info("⏳ Ожидаем ответа второго игрока")
             conn.commit()
             time_left = 0
             if responses['expires_at']:
@@ -1074,7 +1130,7 @@ def respond_match():
             return jsonify({"status": "waiting", "both_accepted": False, "time_left": time_left})
     
     except Exception as e:
-        logger.error(f"ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА в respond_match: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1100,6 +1156,8 @@ def stop_search():
         if not player_id:
             return jsonify({"error": "User not found"}), 404
         
+        logger.info(f"stop_search для игрока {player_id}")
+        
         conn = get_db()
         cursor = conn.cursor()
         
@@ -1107,6 +1165,7 @@ def stop_search():
         deleted = cursor.rowcount
         conn.commit()
         
+        logger.info(f"Удалено {deleted} записей из очереди")
         return jsonify({"status": "stopped", "deleted": deleted})
     
     except Exception as e:
@@ -1135,6 +1194,8 @@ def create_game():
         conn = get_db()
         cursor = conn.cursor()
         
+        logger.info(f"create_game для match_id={data['match_id']}")
+        
         # Получаем данные матча
         cursor.execute("""
             SELECT player1_id, player2_id, mode
@@ -1149,6 +1210,7 @@ def create_game():
             return jsonify({"error": "Match not found or not accepted"}), 404
         
         player1_id, player2_id = match[0], match[1]
+        logger.info(f"Матч найден: игроки {player1_id} и {player2_id}")
         
         # Получаем telegram_id игроков
         cursor.execute("SELECT u.telegram_id, p.nick FROM users u JOIN profiles p ON u.player_id = p.player_id WHERE u.player_id = %s", (player1_id,))
@@ -1158,10 +1220,12 @@ def create_game():
         user2 = cursor.fetchone()
         
         if not user1 or not user2:
+            logger.error("Users not found")
             return jsonify({"error": "Users not found"}), 404
         
         telegram_id1, nick1 = user1
         telegram_id2, nick2 = user2
+        logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
         # Создаем чат в Telegram
         create_chat_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createGroupChat"
@@ -1170,6 +1234,7 @@ def create_game():
             "user_ids": [telegram_id1, telegram_id2]
         }
         
+        logger.info("Создаем чат в Telegram...")
         chat_response = requests.post(create_chat_url, json=chat_data)
         chat_result = chat_response.json()
         
@@ -1178,6 +1243,7 @@ def create_game():
             return jsonify({"error": "Failed to create chat"}), 500
         
         chat_id = chat_result['result']['id']
+        logger.info(f"✅ Чат создан, ID: {chat_id}")
         
         # Отправляем приветствие
         welcome_text = f"""** МАТЧ создан ! **
@@ -1196,6 +1262,7 @@ def create_game():
         }
         
         requests.post(send_msg_url, json=msg_data)
+        logger.info("✅ Приветствие отправлено")
         
         # Создаем пригласительную ссылку
         invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
@@ -1209,6 +1276,7 @@ def create_game():
         invite_result = invite_response.json()
         
         chat_link = invite_result['result']['invite_link'] if invite_result.get('ok') else f"https://t.me/c/{str(chat_id)[4:]}"
+        logger.info(f"✅ Ссылка-приглашение: {chat_link}")
         
         # Сохраняем в БД
         cursor.execute("""
@@ -1221,9 +1289,10 @@ def create_game():
         
         # Удаляем матч
         cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
+        logger.info(f"✅ Матч {data['match_id']} удален")
         
         conn.commit()
-        logger.info(f"Создана игра ID: {game_id}, чат: {chat_link}")
+        logger.info(f"✅ Игра создана, ID: {game_id}")
         
         return jsonify({
             "status": "ok",
@@ -1233,7 +1302,7 @@ def create_game():
         })
     
     except Exception as e:
-        logger.error(f"ОШИБКА: {e}", exc_info=True)
+        logger.error(f"ОШИБКА в create_game: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1262,6 +1331,7 @@ if __name__ == '__main__':
     print("   - matches: pending → accepted → удаление после создания чата")
     print("   - При отказе: удаляем матч и возвращаем в очередь")
     print("   - Добавлена проверка существующего матча в начале check_match")
+    print("   - ПОДРОБНОЕ ЛОГИРОВАНИЕ всех шагов")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
