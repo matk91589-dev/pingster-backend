@@ -968,6 +968,73 @@ def check_match():
         if expired_count > 0:
             logger.info(f"Помечено {expired_count} истекших матчей для игрока {player_id}")
         
+        # === НОВЫЙ ШАГ 0: Проверяем статус 'matched' в search_queue ===
+        cursor.execute("""
+            SELECT match_id
+            FROM search_queue
+            WHERE player_id = %s
+            AND status = 'matched'
+            LIMIT 1
+        """, (player_id,))
+        
+        matched_row = cursor.fetchone()
+        
+        if matched_row:
+            match_id = matched_row[0]
+            logger.info(f"Найден существующий matched матч ID={match_id} для игрока {player_id}")
+            
+            # Получаем данные матча
+            cursor.execute("""
+                SELECT player1_id, player2_id, expires_at
+                FROM matches
+                WHERE id = %s
+            """, (match_id,))
+            
+            match = cursor.fetchone()
+            
+            if match:
+                opponent_id = match[1] if match[0] == player_id else match[0]
+                
+                # Получаем данные соперника
+                cursor.execute("""
+                    SELECT nick, age, steam_link, faceit_link
+                    FROM profiles WHERE player_id = %s
+                """, (opponent_id,))
+                
+                profile = cursor.fetchone()
+                
+                if profile:
+                    # Получаем дополнительные данные из search_queue
+                    cursor.execute("""
+                        SELECT style, rank, comment
+                        FROM search_queue
+                        WHERE player_id = %s AND match_id = %s
+                        LIMIT 1
+                    """, (opponent_id, match_id))
+                    
+                    queue_data = cursor.fetchone()
+                    
+                    opponent = {
+                        "player_id": opponent_id,
+                        "nick": profile['nick'],
+                        "age": profile['age'],
+                        "style": queue_data['style'] if queue_data and queue_data['style'] else "fan",
+                        "rating": queue_data['rank'] if queue_data and queue_data['rank'] else "0",
+                        "steam_link": profile['steam_link'] if profile['steam_link'] else "Не указана",
+                        "faceit_link": profile['faceit_link'] if profile['faceit_link'] else "Не указана",
+                        "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
+                    }
+                    
+                    server_time = datetime.utcnow()
+                    
+                    return jsonify({
+                        "match_found": True,
+                        "match_id": match_id,
+                        "opponent": opponent,
+                        "expires_at": match[2].isoformat() if match[2] else None,
+                        "server_time": server_time.isoformat()
+                    })
+        
         # === ШАГ 1: Проверяем существующий pending матч ===
         cursor.execute("""
             SELECT id, player1_id, player2_id, expires_at
@@ -1444,6 +1511,7 @@ if __name__ == '__main__':
     print("   - Проверка активного матча перед поиском")
     print("   - Новый эндпоинт /api/match/status/<match_id> для проверки both_accepted")
     print("   - АВТОМАТИЧЕСКАЯ ОЧИСТКА истекших матчей")
+    print("   - ПРОВЕРКА СТАТУСА 'MATCHED' В ОЧЕРЕДИ")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
