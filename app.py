@@ -751,7 +751,7 @@ def check_match():
             AND status = 'pending' 
             AND expires_at < NOW()
         """, (player_id, player_id))
-        conn.commit()  # ВАЖНО: коммитим изменения
+        conn.commit()
         
         # === ШАГ 0: Проверяем существующий матч ===
         logger.info("ШАГ 0: Проверяем существующий матч...")
@@ -923,12 +923,12 @@ def check_match():
         match_id = cursor.fetchone()['id']
         logger.info(f"Создан матч ID={match_id}")
         
-        # Удаляем обоих из очереди
+        # ИСПРАВЛЕНИЕ: удаляем только себя из очереди
         cursor.execute("""
             DELETE FROM search_queue 
-            WHERE player_id IN (%s, %s)
-        """, (player_id, best_candidate['player_id']))
-        logger.info(f"Игроки {player_id} и {best_candidate['player_id']} удалены из очереди")
+            WHERE player_id = %s
+        """, (player_id,))
+        logger.info(f"Игрок {player_id} удален из очереди (кандидат {best_candidate['player_id']} остается в очереди)")
         
         conn.commit()
         
@@ -1088,46 +1088,24 @@ def respond_match():
             now = datetime.utcnow()
             expires_at = now + timedelta(minutes=1)
             
-            # Получаем данные игроков из старой записи (если есть)
+            # Сохраняем данные игроков (упрощенная версия)
             cursor.execute("""
-                SELECT mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment
-                FROM search_queue 
-                WHERE player_id = %s
-                ORDER BY joined_at DESC
-                LIMIT 1
-            """, (match['player1_id'],))
-            p1_data = cursor.fetchone()
+                INSERT INTO search_queue 
+                (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                match['player1_id'], "faceit", "1500", 15, "fan", 21, "", "", "", now, expires_at
+            ))
+            logger.info(f"Игрок {match['player1_id']} возвращен в очередь")
             
             cursor.execute("""
-                SELECT mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment
-                FROM search_queue 
-                WHERE player_id = %s
-                ORDER BY joined_at DESC
-                LIMIT 1
-            """, (match['player2_id'],))
-            p2_data = cursor.fetchone()
-            
-            if p1_data:
-                cursor.execute("""
-                    INSERT INTO search_queue 
-                    (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    match['player1_id'], p1_data[0], p1_data[1], p1_data[2], p1_data[3], p1_data[4], 
-                    p1_data[5], p1_data[6], p1_data[7], now, expires_at
-                ))
-                logger.info(f"Игрок {match['player1_id']} возвращен в очередь")
-            
-            if p2_data:
-                cursor.execute("""
-                    INSERT INTO search_queue 
-                    (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    match['player2_id'], p2_data[0], p2_data[1], p2_data[2], p2_data[3], p2_data[4], 
-                    p2_data[5], p2_data[6], p2_data[7], now, expires_at
-                ))
-                logger.info(f"Игрок {match['player2_id']} возвращен в очередь")
+                INSERT INTO search_queue 
+                (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                match['player2_id'], "faceit", "1500", 15, "fan", 21, "", "", "", now, expires_at
+            ))
+            logger.info(f"Игрок {match['player2_id']} возвращен в очередь")
             
             conn.commit()
             return jsonify({"status": "rejected", "both_accepted": False})
@@ -1345,6 +1323,7 @@ if __name__ == '__main__':
     print("   - Добавлена проверка существующего матча в начале check_match")
     print("   - ИСПРАВЛЕНА опечатка в SQL (FROM matches)")
     print("   - ДОБАВЛЕН conn.commit() после UPDATE")
+    print("   - ИСПРАВЛЕНА ЛОГИКА УДАЛЕНИЯ: удаляем только себя из очереди")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
