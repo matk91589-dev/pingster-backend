@@ -794,11 +794,24 @@ def start_search():
         if data.get('age') and (data['age'] < 16 or data['age'] > 100):
             return jsonify({"error": "Возраст должен быть от 16 до 100 лет"}), 400
         
+        # ИСПРАВЛЕНИЕ: Помечаем истекшие матчи этого игрока
+        cursor.execute("""
+            UPDATE matches 
+            SET status = 'expired' 
+            WHERE (player1_id = %s OR player2_id = %s) 
+            AND status = 'pending' 
+            AND expires_at < NOW()
+        """, (player_id, player_id))
+        expired_count = cursor.rowcount
+        if expired_count > 0:
+            logger.info(f"Помечено {expired_count} истекших матчей для игрока {player_id}")
+        
         # Проверяем, нет ли уже активного матча у игрока
         cursor.execute("""
             SELECT id FROM matches 
             WHERE (player1_id = %s OR player2_id = %s) 
             AND status = 'pending'
+            AND expires_at > NOW()
         """, (player_id, player_id))
         if cursor.fetchone():
             logger.warning(f"Игрок {player_id} уже участвует в активном матче")
@@ -943,12 +956,25 @@ def check_match():
         
         logger.debug(f"Найден player_id: {player_id}")
         
+        # ИСПРАВЛЕНИЕ: Помечаем истекшие матчи этого игрока
+        cursor.execute("""
+            UPDATE matches 
+            SET status = 'expired' 
+            WHERE (player1_id = %s OR player2_id = %s) 
+            AND status = 'pending' 
+            AND expires_at < NOW()
+        """, (player_id, player_id))
+        expired_count = cursor.rowcount
+        if expired_count > 0:
+            logger.info(f"Помечено {expired_count} истекших матчей для игрока {player_id}")
+        
         # === ШАГ 1: Проверяем существующий pending матч ===
         cursor.execute("""
             SELECT id, player1_id, player2_id, expires_at
             FROM matches
             WHERE (player1_id = %s OR player2_id = %s)
             AND status = 'pending'
+            AND expires_at > NOW()
             LIMIT 1
         """, (player_id, player_id))
         
@@ -1417,6 +1443,7 @@ if __name__ == '__main__':
     print("   - Сброс ответов и возврат в очередь при reject/expire")
     print("   - Проверка активного матча перед поиском")
     print("   - Новый эндпоинт /api/match/status/<match_id> для проверки both_accepted")
+    print("   - АВТОМАТИЧЕСКАЯ ОЧИСТКА истекших матчей")
     print("\nЭндпоинты:")
     print("   - /api/user/init")
     print("   - /api/profile/get")
