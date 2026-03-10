@@ -731,79 +731,69 @@ def check_match():
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
-        # === ШАГ 0: Проверяем существующий матч ===
+        # === ШАГ 0: Проверяем существующий матч (УПРОЩЕННАЯ ПРОВЕРКА) ===
         logger.info("ШАГ 0: Проверяем существующий матч...")
         cursor.execute("""
             SELECT id, player1_id, player2_id, expires_at, status
             FROM matches
-            WHERE (player1_id = %s OR player2_id = %s)
-            AND status IN ('pending', 'accepted')
-            AND expires_at > NOW()
+            WHERE player1_id = %s OR player2_id = %s
+            ORDER BY id DESC
             LIMIT 1
         """, (player_id, player_id))
         
         existing_match = cursor.fetchone()
         
         if existing_match:
-            logger.info(f"Найден существующий матч ID={existing_match['id']}, статус={existing_match['status']}")
-            
-            other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
-            logger.info(f"Соперник ID: {other_id}")
-            
-            # Получаем данные соперника из profiles
-            cursor.execute("""
-                SELECT nick, age, steam_link, faceit_link
-                FROM profiles WHERE player_id = %s
-            """, (other_id,))
-            
-            profile = cursor.fetchone()
-            
-            if profile:
-                # Пытаемся получить стиль и ранг (из search_queue, если есть)
+            # Проверяем что матч еще активен (не истек и не завершен)
+            if existing_match['status'] in ['pending', 'accepted'] and existing_match['expires_at'] > datetime.utcnow():
+                logger.info(f"Найден активный матч ID={existing_match['id']}, статус={existing_match['status']}")
+                
+                other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
+                logger.info(f"Соперник ID: {other_id}")
+                
+                # Получаем данные соперника из profiles
                 cursor.execute("""
-                    SELECT style, rank, comment
-                    FROM search_queue 
-                    WHERE player_id = %s
-                    ORDER BY joined_at DESC
-                    LIMIT 1
+                    SELECT nick, age, steam_link, faceit_link
+                    FROM profiles WHERE player_id = %s
                 """, (other_id,))
                 
-                queue_data = cursor.fetchone()
+                profile = cursor.fetchone()
                 
-                opponent = {
-                    "player_id": other_id,
-                    "nick": profile['nick'],
-                    "age": profile['age'],
-                    "style": queue_data['style'] if queue_data and queue_data['style'] else "fan",
-                    "rating": queue_data['rank'] if queue_data and queue_data['rank'] else "0",
-                    "steam_link": profile['steam_link'] if profile['steam_link'] else "Не указана",
-                    "faceit_link": profile['faceit_link'] if profile['faceit_link'] else "Не указана",
-                    "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
-                }
-                
-                logger.info(f"Возвращаем существующий матч для игрока {player_id}")
-                return jsonify({
-                    "match_found": True,
-                    "match_id": existing_match['id'],
-                    "opponent": opponent,
-                    "expires_at": existing_match['expires_at'].isoformat(),
-                    "server_time": datetime.utcnow().isoformat()
-                })
+                if profile:
+                    # Пытаемся получить стиль и ранг (из search_queue, если есть)
+                    cursor.execute("""
+                        SELECT style, rank, comment
+                        FROM search_queue 
+                        WHERE player_id = %s
+                        ORDER BY joined_at DESC
+                        LIMIT 1
+                    """, (other_id,))
+                    
+                    queue_data = cursor.fetchone()
+                    
+                    opponent = {
+                        "player_id": other_id,
+                        "nick": profile['nick'],
+                        "age": profile['age'],
+                        "style": queue_data['style'] if queue_data and queue_data['style'] else "fan",
+                        "rating": queue_data['rank'] if queue_data and queue_data['rank'] else "0",
+                        "steam_link": profile['steam_link'] if profile['steam_link'] else "Не указана",
+                        "faceit_link": profile['faceit_link'] if profile['faceit_link'] else "Не указана",
+                        "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
+                    }
+                    
+                    logger.info(f"Возвращаем существующий матч для игрока {player_id}")
+                    return jsonify({
+                        "match_found": True,
+                        "match_id": existing_match['id'],
+                        "opponent": opponent,
+                        "expires_at": existing_match['expires_at'].isoformat(),
+                        "server_time": datetime.utcnow().isoformat()
+                    })
             else:
-                logger.error(f"Профиль соперника {other_id} не найден")
+                logger.info(f"Найден матч ID={existing_match['id']} но он неактивен (статус={existing_match['status']}, истекает={existing_match['expires_at']})")
         else:
             logger.info("Существующий матч не найден")
-            
-            # Отладочный запрос - покажем все матчи игрока
-            cursor.execute("""
-                SELECT id, player1_id, player2_id, status, expires_at
-                FROM matches
-                WHERE player1_id = %s OR player2_id = %s
-                ORDER BY id DESC
-                LIMIT 5
-            """, (player_id, player_id))
-            debug_matches = cursor.fetchall()
-            logger.info(f"Все последние матчи игрока: {debug_matches}")
         
         # === ШАГ 1: Получаем данные текущего игрока из очереди ===
         logger.info("ШАГ 1: Проверяем очередь поиска...")
@@ -833,7 +823,7 @@ def check_match():
         min_bucket, max_bucket = get_range_buckets(current_mode, current_style, current_bucket)
         logger.info(f"Диапазон бакетов: {min_bucket} - {max_bucket}")
         
-        # === ШАГ 2: Ищем кандидатов ===
+        # === ШАГ 2: Ищем кандидатов (С БЛОКИРОВКОЙ) ===
         logger.info("ШАГ 2: Ищем кандидатов...")
         query = """
             SELECT 
@@ -852,6 +842,9 @@ def check_match():
         if min_bucket is not None and max_bucket is not None:
             query += " AND sq.rating_bucket BETWEEN %s AND %s"
             params.extend([min_bucket, max_bucket])
+        
+        # Добавляем блокировку для защиты от race condition
+        query += " FOR UPDATE SKIP LOCKED"
         
         cursor.execute(query, params)
         candidates = cursor.fetchall()
@@ -913,13 +906,14 @@ def check_match():
         match_id = cursor.fetchone()['id']
         logger.info(f"Создан матч ID={match_id}")
         
-        # Удаляем только себя из очереди
+        # === ИСПРАВЛЕНИЕ: Удаляем ОБОИХ игроков из очереди ===
         cursor.execute("""
             DELETE FROM search_queue 
-            WHERE player_id = %s
-        """, (player_id,))
-        logger.info(f"Игрок {player_id} удален из очереди")
+            WHERE player_id IN (%s, %s)
+        """, (player_id, best_candidate['player_id']))
+        logger.info(f"Игроки {player_id} и {best_candidate['player_id']} удалены из очереди")
         
+        # КОММИТИМ ТРАНЗАКЦИЮ
         conn.commit()
         
         opponent = {
@@ -1292,39 +1286,12 @@ def create_game():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("Pingster backend с РОТАЦИОННЫМ МЭТЧМЕЙКИНГОМ и ЧАТАМИ запускается...")
-    print("НОВАЯ АРХИТЕКТУРА:")
-    print("   - Ротационный подбор (каждый новый проверяет всех)")
-    print("   - Приоритет стиля (сначала свой стиль, потом другой)")
-    print("   - Умная формула: |rating_diff| + |age_diff|*100")
-    print("   - FACEIT: ±400 ELO (всегда)")
-    print("   - PREMIER Fan: без ограничений")
-    print("   - PREMIER Tryhard: ±5000")
-    print("   - MM Fan: без ограничений")
-    print("   - MM Tryhard: ±3 ранга")
-    print("   - Telegram чаты создаются автоматически!")
-    print("   - search_queue: только waiting (без status/match_id)")
-    print("   - matches: pending → accepted → не удаляются сразу")
-    print("   - При отказе: удаляем матч и возвращаем в очередь")
-    print("   - Добавлена проверка существующего матча в начале check_match")
-    print("   - УБРАНО ПРИНУДИТЕЛЬНОЕ ПРОСТАВЛЕНИЕ EXPIRED")
-    print("   - Добавлена проверка кандидата перед созданием матча")
-    print("\nЭндпоинты:")
-    print("   - /api/user/init")
-    print("   - /api/profile/get")
-    print("   - /api/profile/update")
-    print("   - /api/avatar/save")
-    print("   - /api/user/balance")
-    print("   - /api/shop/buy")
-    print("   - /api/inventory/get")
-    print("   - /api/case/open")
-    print("   - /api/item/update_status")
-    print("   - /api/item/delete")
-    print("   - /api/search/start")
-    print("   - /api/search/stop")
-    print("   - /api/match/check")
-    print("   - /api/match/status/<match_id>")
-    print("   - /api/match/respond")
-    print("   - /api/game/create")
-    print("\nСервер запущен на порту 5000")
+    print("🔥 PINGSTER BACKEND - ИСПРАВЛЕННАЯ ВЕРСИЯ")
+    print("✅ ГЛАВНЫЕ ИСПРАВЛЕНИЯ:")
+    print("   - Удаление ОБОИХ игроков из очереди при создании матча")
+    print("   - Упрощенная проверка существующего матча (без лишних условий)")
+    print("   - FOR UPDATE SKIP LOCKED для защиты от race condition")
+    print("   - Коммит транзакции ДО возврата ответа")
+    print("   - Корректная обработка истекших матчей")
+    print("\n🚀 Сервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
