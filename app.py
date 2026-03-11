@@ -34,7 +34,10 @@ DB_PORT = os.getenv("DB_PORT", 5432)
 # Токен бота
 BOT_TOKEN = "8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8"
 # Username бота (нужно указать правильный)
-BOT_USERNAME = "PingsterBot"  # Замени на актуальный username бота
+BOT_USERNAME = "PingsterBot"
+
+# ID форум-группы (получен через @getidsbot)
+FORUM_GROUP_ID = -1003800077788
 
 def get_db():
     logger.debug("Подключение к базе данных...")
@@ -1162,122 +1165,76 @@ def create_game():
         telegram_id2, nick2 = user2
         logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
-        # === ИСПРАВЛЕННАЯ ЛОГИКА СОЗДАНИЯ ЧАТА ===
-        # Метод createGroupChat НЕ РАБОТАЕТ с user_ids, используем другой подход
+        # === НОВАЯ ЛОГИКА С ФОРУМ-ГРУППОЙ ===
+        # Используем существующую форум-группу для создания тем под каждый матч
         
-        # ШАГ 1: Создаем супергруппу (более надежный метод)
-        create_supergroup_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createSupergroup"
-        supergroup_data = {
-            "title": f"Pingster Match #{data['match_id']}",
-            "description": f"Чат для матча #{data['match_id']} между {nick1} и {nick2}"
+        # ID форум-группы (получен ранее)
+        FORUM_ID = -1003800077788
+        
+        # ШАГ 1: Создаем тему в форум-группе
+        create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
+        topic_data = {
+            "chat_id": FORUM_ID,
+            "name": f"#{data['match_id']} | {nick1} & {nick2}",
+            "icon_color": 0x6FB9F0  # Приятный голубой цвет
         }
         
-        logger.info("Создаем супергруппу в Telegram...")
-        supergroup_response = requests.post(create_supergroup_url, json=supergroup_data)
-        supergroup_result = supergroup_response.json()
+        logger.info(f"Создаем тему для матча #{data['match_id']}...")
+        topic_response = requests.post(create_topic_url, json=topic_data)
+        topic_result = topic_response.json()
         
-        if not supergroup_result.get('ok'):
-            logger.error(f"Failed to create supergroup: {supergroup_result}")
-            
-            # Пробуем создать обычную группу с одним пользователем
-            create_chat_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createGroupChat"
-            chat_data = {
-                "title": f"Pingster Match #{data['match_id']}",
-                "user_ids": [int(telegram_id1)]  # Сначала добавляем первого
-            }
-            
-            logger.info("Пробуем создать обычную группу...")
-            chat_response = requests.post(create_chat_url, json=chat_data)
-            chat_result = chat_response.json()
-            
-            if not chat_result.get('ok'):
-                logger.error(f"Failed to create chat: {chat_result}")
-                
-                # Последняя попытка - создаем группу без пользователей
-                chat_data = {
-                    "title": f"Pingster Match #{data['match_id']}",
-                    "user_ids": []
-                }
-                chat_response = requests.post(create_chat_url, json=chat_data)
-                chat_result = chat_response.json()
-                
-                if not chat_result.get('ok'):
-                    logger.error(f"All attempts failed: {chat_result}")
-                    return jsonify({"error": "Failed to create chat"}), 500
-            
-            chat_id = chat_result['result']['id']
-            logger.info(f"Чат создан, ID: {chat_id}")
-            
-            # Добавляем второго пользователя
-            try:
-                add_user_url = f"https://api.telegram.org/bot{BOT_TOKEN}/approveChatJoinRequest"
-                add_user_data = {
-                    "chat_id": chat_id,
-                    "user_id": int(telegram_id2)
-                }
-                requests.post(add_user_url, json=add_user_data)
-                logger.info(f"Второй пользователь добавлен")
-            except Exception as e:
-                logger.error(f"Ошибка добавления второго пользователя: {e}")
-                
-        else:
-            chat_id = supergroup_result['result']['id']
-            logger.info(f"Супергруппа создана, ID: {chat_id}")
+        if not topic_result.get('ok'):
+            logger.error(f"Failed to create forum topic: {topic_result}")
+            return jsonify({"error": "Failed to create chat"}), 500
         
-        # ШАГ 2: Создаем invite link
-        invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-        invite_data = {
-            "chat_id": chat_id,
-            "member_limit": 2,
-            "expire_date": int((datetime.utcnow() + timedelta(hours=1)).timestamp())
-        }
+        # Получаем ID созданной темы
+        topic_id = topic_result['result']['message_thread_id']
+        logger.info(f"Тема создана, ID: {topic_id}")
         
-        invite_response = requests.post(invite_url, json=invite_data)
-        invite_result = invite_response.json()
+        # ШАГ 2: Создаем ссылку на тему
+        # Формат: https://t.me/c/CHAT_ID/TOPIC_ID
+        # Убираем -100 из начала chat_id
+        clean_chat_id = str(FORUM_ID).replace('-100', '')
+        chat_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
+        logger.info(f"Ссылка на тему: {chat_link}")
         
-        if invite_result.get('ok'):
-            chat_link = invite_result['result']['invite_link']
-            logger.info(f"Invite link создан: {chat_link}")
-        else:
-            # fallback на обычную ссылку
-            chat_link = f"https://t.me/c/{str(chat_id)[4:]}"
-            logger.warning(f"Не удалось создать invite link, используем fallback: {chat_link}")
-        
-        # ШАГ 3: Отправляем простое приветствие в чат
+        # ШАГ 3: Отправляем приветствие в тему
         welcome_text = f"""🎯 **МАТЧ #{data['match_id']} СОЗДАН!**
 
 Привет, {nick1} и {nick2}!
-Это ваш временный чат для игры."""
+Это ваш временный чат для игры.
+
+Договаривайтесь здесь о катке."""
         
         try:
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                 json={
-                    "chat_id": chat_id,
+                    "chat_id": FORUM_ID,
+                    "message_thread_id": topic_id,
                     "text": welcome_text,
                     "parse_mode": "Markdown"
                 }
             )
-            logger.info("Приветствие отправлено в чат")
+            logger.info("Приветствие отправлено в тему")
         except Exception as e:
-            logger.error(f"Ошибка отправки приветствия в чат: {e}")
+            logger.error(f"Ошибка отправки приветствия: {e}")
         
         # ШАГ 4: Сохраняем в БД
         cursor.execute("""
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at)
             VALUES (%s, %s, %s, %s, %s, 'active', NOW())
             RETURNING id
-        """, (data['match_id'], player1_id, player2_id, chat_id, chat_link))
+        """, (data['match_id'], player1_id, player2_id, topic_id, chat_link))
         
         game_id = cursor.fetchone()[0]
         conn.commit()
         logger.info(f"Игра создана, ID: {game_id}")
         
-        # ВОЗВРАЩАЕМ ТОЛЬКО ССЫЛКУ
+        # Возвращаем ссылку на тему
         return jsonify({
             "status": "ok",
             "game_id": game_id,
-            "chat_id": chat_id,
             "chat_link": chat_link
         })
     
@@ -1296,12 +1253,13 @@ def create_game():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("🔥 PINGSTER BACKEND - ИСПРАВЛЕННАЯ ВЕРСИЯ ЧАТОВ!")
+    print("🔥 PINGSTER BACKEND - ФОРУМ-ГРУППА!")
     print("✅ Что работает:")
     print("   - Мэтчмейкинг (оба получают матч)")
-    print("   - Создание Telegram чатов с несколькими попытками")
-    print("   - createSupergroup + fallback методы")
-    print("   - Приветствие в чате")
+    print("   - Создание тем в форум-группе")
+    print("   - Красивые названия: #ID | ник1 & ник2")
+    print("   - Приветствие в теме")
     print("   - Возврат chat_link для фронта")
+    print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print("\n🚀 Сервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
