@@ -1179,18 +1179,45 @@ def create_game():
         telegram_id2, nick2 = user2
         logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
-        # === НОВАЯ ЛОГИКА С ФОРУМ-ГРУППОЙ ===
-        # Используем существующую форум-группу для создания тем под каждый матч
-        
-        # ID форум-группы (получен ранее)
+        # === НОВАЯ ЛОГИКА: Сначала добавляем игроков в группу ===
         FORUM_ID = -1003753772298
+        
+        # Добавляем первого игрока
+        try:
+            add_user_url = f"https://api.telegram.org/bot{BOT_TOKEN}/approveChatJoinRequest"
+            add_data = {
+                "chat_id": FORUM_ID,
+                "user_id": int(telegram_id1)
+            }
+            add_response = requests.post(add_user_url, json=add_data)
+            if add_response.json().get('ok'):
+                logger.info(f"Игрок {telegram_id1} добавлен в группу")
+            else:
+                logger.warning(f"Не удалось добавить игрока {telegram_id1} в группу: {add_response.json()}")
+        except Exception as e:
+            logger.error(f"Ошибка добавления игрока {telegram_id1}: {e}")
+        
+        # Добавляем второго игрока
+        try:
+            add_user_url = f"https://api.telegram.org/bot{BOT_TOKEN}/approveChatJoinRequest"
+            add_data = {
+                "chat_id": FORUM_ID,
+                "user_id": int(telegram_id2)
+            }
+            add_response = requests.post(add_user_url, json=add_data)
+            if add_response.json().get('ok'):
+                logger.info(f"Игрок {telegram_id2} добавлен в группу")
+            else:
+                logger.warning(f"Не удалось добавить игрока {telegram_id2} в группу: {add_response.json()}")
+        except Exception as e:
+            logger.error(f"Ошибка добавления игрока {telegram_id2}: {e}")
         
         # ШАГ 1: Создаем тему в форум-группе
         create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
         topic_data = {
             "chat_id": FORUM_ID,
             "name": f"#{data['match_id']} | {nick1} & {nick2}",
-            "icon_color": 0x6FB9F0  # Приятный голубой цвет
+            "icon_color": 0x6FB9F0
         }
         
         logger.info(f"Создаем тему для матча #{data['match_id']}...")
@@ -1201,13 +1228,10 @@ def create_game():
             logger.error(f"Failed to create forum topic: {topic_result}")
             return jsonify({"error": "Failed to create chat"}), 500
         
-        # Получаем ID созданной темы
         topic_id = topic_result['result']['message_thread_id']
         logger.info(f"Тема создана, ID: {topic_id}")
         
         # ШАГ 2: Создаем ссылку на тему
-        # Формат: https://t.me/c/CHAT_ID/TOPIC_ID
-        # Убираем -100 из начала chat_id
         clean_chat_id = str(FORUM_ID).replace('-100', '')
         chat_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
         logger.info(f"Ссылка на тему: {chat_link}")
@@ -1245,7 +1269,6 @@ def create_game():
         conn.commit()
         logger.info(f"Игра создана, ID: {game_id}")
         
-        # Возвращаем ссылку на тему
         return jsonify({
             "status": "ok",
             "game_id": game_id,
@@ -1275,6 +1298,7 @@ if __name__ == '__main__':
     print("   - Приветствие в теме")
     print("   - Возврат chat_link для фронта")
     print("   - Защита от дублей (проверка existing_game)")
+    print("   - Автоматическое добавление игроков в группу")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print("\n🚀 Сервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
