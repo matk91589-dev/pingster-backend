@@ -1159,15 +1159,15 @@ def create_game():
         telegram_id2, nick2 = user2
         logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
-        # === НОВАЯ ЛОГИКА СОЗДАНИЯ ЧАТА (ВАРИАНТ 2) ===
-        # ШАГ 1: Создаем пустую группу
+        # === ИСПРАВЛЕННАЯ ЛОГИКА СОЗДАНИЯ ЧАТА ===
+        # ШАГ 1: Создаем группу с ОБОИМИ игроками сразу
         create_chat_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createGroupChat"
         chat_data = {
             "title": f"Pingster Match #{data['match_id']}",
-            "user_ids": []  # Пустой список - так надежнее!
+            "user_ids": [int(telegram_id1), int(telegram_id2)]  # Оба игрока сразу!
         }
         
-        logger.info("Создаем чат в Telegram...")
+        logger.info("Создаем чат в Telegram с обоими игроками...")
         chat_response = requests.post(create_chat_url, json=chat_data)
         chat_result = chat_response.json()
         
@@ -1178,7 +1178,7 @@ def create_game():
         chat_id = chat_result['result']['id']
         logger.info(f"Чат создан, ID: {chat_id}")
         
-        # ШАГ 2: Создаем invite link
+        # ШАГ 2: Создаем invite link (на всякий случай)
         invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
         invite_data = {
             "chat_id": chat_id,
@@ -1197,52 +1197,26 @@ def create_game():
             chat_link = f"https://t.me/c/{str(chat_id)[4:]}"
             logger.warning(f"Не удалось создать invite link, используем fallback: {chat_link}")
         
-        # ШАГ 3: Отправляем приветствие в сам чат
-        welcome_text = f"""** МАТЧ создан ! **
+        # ШАГ 3: Отправляем простое приветствие в чат (без кнопок)
+        welcome_text = f"""🎯 **МАТЧ #{data['match_id']} СОЗДАН!**
 
 Привет, {nick1} и {nick2}!
-Это ваш временный чат для игры.
-
-Нажми кнопку ниже, чтобы присоединиться:"""
-
+Это ваш временный чат для игры."""
+        
         try:
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                 json={
                     "chat_id": chat_id,
                     "text": welcome_text,
-                    "parse_mode": "Markdown",
-                    "reply_markup": {
-                        "inline_keyboard": [[
-                            {"text": "💬 Присоединиться к чату", "url": chat_link}
-                        ]]
-                    }
+                    "parse_mode": "Markdown"
                 }
             )
             logger.info("Приветствие отправлено в чат")
         except Exception as e:
             logger.error(f"Ошибка отправки приветствия в чат: {e}")
         
-        # ШАГ 4: Отправляем ссылку в ЛС каждому игроку
-        for tg_id, nick in [(telegram_id1, nick1), (telegram_id2, nick2)]:
-            try:
-                send_msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                msg_data = {
-                    "chat_id": tg_id,
-                    "text": f"🎯 **Матч #{data['match_id']} создан!**\n\nСоперник: {nick2 if nick == nick1 else nick1}\n\nНажми кнопку, чтобы перейти в чат:",
-                    "parse_mode": "Markdown",
-                    "reply_markup": {
-                        "inline_keyboard": [[
-                            {"text": "💬 Перейти в чат", "url": chat_link}
-                        ]]
-                    }
-                }
-                requests.post(send_msg_url, json=msg_data)
-                logger.info(f"Ссылка отправлена {nick}")
-            except Exception as e:
-                logger.error(f"Ошибка отправки {nick}: {e}")
-        
-        # Сохраняем в БД
+        # ШАГ 4: Сохраняем в БД
         cursor.execute("""
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at)
             VALUES (%s, %s, %s, %s, %s, 'active', NOW())
@@ -1253,11 +1227,12 @@ def create_game():
         conn.commit()
         logger.info(f"Игра создана, ID: {game_id}")
         
+        # ВОЗВРАЩАЕМ ТОЛЬКО ССЫЛКУ - кнопки будут на фронте
         return jsonify({
             "status": "ok",
             "game_id": game_id,
             "chat_id": chat_id,
-            "chat_link": chat_link
+            "chat_link": chat_link  # Просто ссылка
         })
     
     except Exception as e:
@@ -1275,11 +1250,12 @@ def create_game():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("🔥 PINGSTER BACKEND - С ЧАТАМИ!")
+    print("🔥 PINGSTER BACKEND - ИСПРАВЛЕННАЯ ВЕРСИЯ ЧАТОВ!")
     print("✅ Что работает:")
     print("   - Мэтчмейкинг (оба получают матч)")
-    print("   - Создание Telegram чатов (новая надежная логика)")
-    print("   - Invite links с кнопками")
-    print("   - Уведомления в ЛС")
+    print("   - Создание Telegram чатов с ОБОИМИ игроками сразу")
+    print("   - Invite link на всякий случай")
+    print("   - Простое приветствие без кнопок")
+    print("   - Возврат ссылки для фронта")
     print("\n🚀 Сервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
