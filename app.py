@@ -37,7 +37,7 @@ BOT_TOKEN = "8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8"
 BOT_USERNAME = "PingsterBot"
 
 # ID форум-группы (получен через @getidsbot)
-FORUM_GROUP_ID = -1003800077788
+FORUM_GROUP_ID = -1003753772298 
 
 def get_db():
     logger.debug("Подключение к базе данных...")
