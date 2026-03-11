@@ -731,7 +731,7 @@ def check_match():
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
-        # === ШАГ 0: Проверяем существующий матч (УПРОЩЕННАЯ ПРОВЕРКА) ===
+        # === ШАГ 0: Проверяем существующий матч ===
         logger.info("ШАГ 0: Проверяем существующий матч...")
         cursor.execute("""
             SELECT id, player1_id, player2_id, expires_at, status
@@ -744,14 +744,13 @@ def check_match():
         existing_match = cursor.fetchone()
         
         if existing_match:
-            # Проверяем что матч еще активен (не истек и не завершен)
+            # Проверяем что матч еще активен
             if existing_match['status'] in ['pending', 'accepted'] and existing_match['expires_at'] > datetime.utcnow():
-                logger.info(f"Найден активный матч ID={existing_match['id']}, статус={existing_match['status']}")
+                logger.info(f"Найден активный матч ID={existing_match['id']}")
                 
                 other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
-                logger.info(f"Соперник ID: {other_id}")
                 
-                # Получаем данные соперника из profiles
+                # Получаем данные соперника
                 cursor.execute("""
                     SELECT nick, age, steam_link, faceit_link
                     FROM profiles WHERE player_id = %s
@@ -760,29 +759,17 @@ def check_match():
                 profile = cursor.fetchone()
                 
                 if profile:
-                    # Пытаемся получить стиль и ранг (из search_queue, если есть)
-                    cursor.execute("""
-                        SELECT style, rank, comment
-                        FROM search_queue 
-                        WHERE player_id = %s
-                        ORDER BY joined_at DESC
-                        LIMIT 1
-                    """, (other_id,))
-                    
-                    queue_data = cursor.fetchone()
-                    
                     opponent = {
                         "player_id": other_id,
                         "nick": profile['nick'],
                         "age": profile['age'],
-                        "style": queue_data['style'] if queue_data and queue_data['style'] else "fan",
-                        "rating": queue_data['rank'] if queue_data and queue_data['rank'] else "0",
-                        "steam_link": profile['steam_link'] if profile['steam_link'] else "Не указана",
-                        "faceit_link": profile['faceit_link'] if profile['faceit_link'] else "Не указана",
-                        "comment": queue_data['comment'] if queue_data and queue_data['comment'] else "Нет комментария"
+                        "style": "fan",
+                        "rating": "0",
+                        "steam_link": profile['steam_link'] or "Не указана",
+                        "faceit_link": profile['faceit_link'] or "Не указана",
+                        "comment": "Нет комментария"
                     }
                     
-                    logger.info(f"Возвращаем существующий матч для игрока {player_id}")
                     return jsonify({
                         "match_found": True,
                         "match_id": existing_match['id'],
@@ -790,10 +777,6 @@ def check_match():
                         "expires_at": existing_match['expires_at'].isoformat(),
                         "server_time": datetime.utcnow().isoformat()
                     })
-            else:
-                logger.info(f"Найден матч ID={existing_match['id']} но он неактивен (статус={existing_match['status']}, истекает={existing_match['expires_at']})")
-        else:
-            logger.info("Существующий матч не найден")
         
         # === ШАГ 1: Получаем данные текущего игрока из очереди ===
         logger.info("ШАГ 1: Проверяем очередь поиска...")
@@ -823,7 +806,7 @@ def check_match():
         min_bucket, max_bucket = get_range_buckets(current_mode, current_style, current_bucket)
         logger.info(f"Диапазон бакетов: {min_bucket} - {max_bucket}")
         
-        # === ШАГ 2: Ищем кандидатов (С БЛОКИРОВКОЙ) ===
+        # === ШАГ 2: Ищем кандидатов ===
         logger.info("ШАГ 2: Ищем кандидатов...")
         query = """
             SELECT 
@@ -843,14 +826,12 @@ def check_match():
             query += " AND sq.rating_bucket BETWEEN %s AND %s"
             params.extend([min_bucket, max_bucket])
         
-        # Добавляем блокировку для защиты от race condition
         query += " FOR UPDATE SKIP LOCKED"
         
         cursor.execute(query, params)
         candidates = cursor.fetchall()
         logger.info(f"Найдено кандидатов до фильтрации: {len(candidates)}")
         
-        # Фильтруем по рангам для MM Tryhard
         candidates = filter_candidates_by_rank(candidates, current_rank, current_mode, current_style)
         logger.info(f"Кандидатов после фильтрации: {len(candidates)}")
         
@@ -869,18 +850,13 @@ def check_match():
             else:
                 other_style.append(cand)
         
-        logger.info(f"Кандидатов с таким же стилем: {len(same_style)}")
-        logger.info(f"Кандидатов с другим стилем: {len(other_style)}")
-        
         same_style.sort(key=lambda x: calculate_score(current, x, current_mode))
         other_style.sort(key=lambda x: calculate_score(current, x, current_mode))
         
         best_candidate = (same_style + other_style)[0]
-        best_score = calculate_score(current, best_candidate, current_mode)
-        logger.info(f"Лучший кандидат: {best_candidate['player_id']}, score={best_score}")
+        logger.info(f"Лучший кандидат: {best_candidate['player_id']}")
         
-        # === ШАГ 4: Проверяем, что кандидат еще в очереди ===
-        logger.info("ШАГ 4: Проверяем кандидата...")
+        # === ШАГ 4: Проверяем кандидата ===
         cursor.execute("""
             SELECT id FROM search_queue 
             WHERE player_id = %s AND expires_at > NOW()
@@ -906,14 +882,13 @@ def check_match():
         match_id = cursor.fetchone()['id']
         logger.info(f"Создан матч ID={match_id}")
         
-        # === ИСПРАВЛЕНИЕ: Удаляем ОБОИХ игроков из очереди ===
+        # Удаляем ОБОИХ из очереди
         cursor.execute("""
             DELETE FROM search_queue 
             WHERE player_id IN (%s, %s)
         """, (player_id, best_candidate['player_id']))
         logger.info(f"Игроки {player_id} и {best_candidate['player_id']} удалены из очереди")
         
-        # КОММИТИМ ТРАНЗАКЦИЮ
         conn.commit()
         
         opponent = {
@@ -922,9 +897,9 @@ def check_match():
             "age": best_candidate['age'],
             "style": best_candidate['style'],
             "rating": best_candidate['rank'],
-            "steam_link": best_candidate['steam_link'] if best_candidate['steam_link'] else "Не указана",
-            "faceit_link": best_candidate['faceit_link'] if best_candidate['faceit_link'] else "Не указана",
-            "comment": best_candidate['comment'] if best_candidate['comment'] else "Нет комментария"
+            "steam_link": best_candidate['steam_link'] or "Не указана",
+            "faceit_link": best_candidate['faceit_link'] or "Не указана",
+            "comment": best_candidate['comment'] or "Нет комментария"
         }
         
         return jsonify({
@@ -1023,8 +998,6 @@ def respond_match():
             logger.error(f"Матч {data['match_id']} не найден")
             return jsonify({"error": "Match not found"}), 404
         
-        logger.info(f"Матч найден: статус {match['status']}, истекает {match['expires_at']}")
-        
         # Проверяем не истекло ли время
         current_time = datetime.utcnow()
         if match['expires_at'] and current_time > match['expires_at']:
@@ -1036,20 +1009,15 @@ def respond_match():
         # Обновляем ответ игрока
         if str(match['player1_id']) == str(player_id):
             if match['player1_response'] is not None:
-                logger.warning(f"Игрок {player_id} уже ответил")
                 return jsonify({"status": "already_responded"})
             cursor.execute("UPDATE matches SET player1_response = %s WHERE id = %s",
                           (data['response'], data['match_id']))
-            logger.info(f"Обновлен ответ player1: {data['response']}")
         elif str(match['player2_id']) == str(player_id):
             if match['player2_response'] is not None:
-                logger.warning(f"Игрок {player_id} уже ответил")
                 return jsonify({"status": "already_responded"})
             cursor.execute("UPDATE matches SET player2_response = %s WHERE id = %s",
                           (data['response'], data['match_id']))
-            logger.info(f"Обновлен ответ player2: {data['response']}")
         else:
-            logger.error(f"Игрок {player_id} не участвует в матче {data['match_id']}")
             return jsonify({"error": "User not in this match"}), 403
         
         cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", (data['match_id'],))
@@ -1065,38 +1033,29 @@ def respond_match():
         # Кто-то отклонил
         elif responses['player1_response'] == 'reject' or responses['player2_response'] == 'reject':
             logger.info("Матч отклонен")
-            # Удаляем матч
             cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
             
             # Возвращаем обоих в очередь
             now = datetime.utcnow()
             expires_at = now + timedelta(minutes=1)
             
-            # Сохраняем данные игроков (упрощенная версия)
             cursor.execute("""
                 INSERT INTO search_queue 
                 (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                match['player1_id'], "faceit", "1500", 15, "fan", 21, "", "", "", now, expires_at
-            ))
-            logger.info(f"Игрок {match['player1_id']} возвращен в очередь")
+            """, (match['player1_id'], "faceit", "1500", 15, "fan", 21, "", "", "", now, expires_at))
             
             cursor.execute("""
                 INSERT INTO search_queue 
                 (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                match['player2_id'], "faceit", "1500", 15, "fan", 21, "", "", "", now, expires_at
-            ))
-            logger.info(f"Игрок {match['player2_id']} возвращен в очередь")
+            """, (match['player2_id'], "faceit", "1500", 15, "fan", 21, "", "", "", now, expires_at))
             
             conn.commit()
             return jsonify({"status": "rejected", "both_accepted": False})
         
         # Один ответил, второй ждем
         else:
-            logger.info("Ожидаем ответа второго игрока")
             conn.commit()
             time_left = 0
             if responses['expires_at']:
@@ -1139,7 +1098,6 @@ def stop_search():
         deleted = cursor.rowcount
         conn.commit()
         
-        logger.info(f"Удалено {deleted} записей из очереди")
         return jsonify({"status": "stopped", "deleted": deleted})
     
     except Exception as e:
@@ -1201,11 +1159,12 @@ def create_game():
         telegram_id2, nick2 = user2
         logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
-        # Создаем чат в Telegram
+        # === НОВАЯ ЛОГИКА СОЗДАНИЯ ЧАТА (ВАРИАНТ 2) ===
+        # ШАГ 1: Создаем пустую группу
         create_chat_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createGroupChat"
         chat_data = {
             "title": f"Pingster Match #{data['match_id']}",
-            "user_ids": [telegram_id1, telegram_id2]
+            "user_ids": []  # Пустой список - так надежнее!
         }
         
         logger.info("Создаем чат в Telegram...")
@@ -1219,26 +1178,7 @@ def create_game():
         chat_id = chat_result['result']['id']
         logger.info(f"Чат создан, ID: {chat_id}")
         
-        # Отправляем приветствие
-        welcome_text = f"""** МАТЧ создан ! **
-
-Привет, {nick1} и {nick2}!
-Это ваш временный чат для игры.
-
-Здесь вы можете договориться и кинуть приглашение в игру.
-Чат самоуничтожится через час."""
-
-        send_msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        msg_data = {
-            "chat_id": chat_id,
-            "text": welcome_text,
-            "parse_mode": "Markdown"
-        }
-        
-        requests.post(send_msg_url, json=msg_data)
-        logger.info("Приветствие отправлено")
-        
-        # Создаем пригласительную ссылку
+        # ШАГ 2: Создаем invite link
         invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
         invite_data = {
             "chat_id": chat_id,
@@ -1249,8 +1189,58 @@ def create_game():
         invite_response = requests.post(invite_url, json=invite_data)
         invite_result = invite_response.json()
         
-        chat_link = invite_result['result']['invite_link'] if invite_result.get('ok') else f"https://t.me/c/{str(chat_id)[4:]}"
-        logger.info(f"Ссылка-приглашение: {chat_link}")
+        if invite_result.get('ok'):
+            chat_link = invite_result['result']['invite_link']
+            logger.info(f"Invite link создан: {chat_link}")
+        else:
+            # fallback на обычную ссылку
+            chat_link = f"https://t.me/c/{str(chat_id)[4:]}"
+            logger.warning(f"Не удалось создать invite link, используем fallback: {chat_link}")
+        
+        # ШАГ 3: Отправляем приветствие в сам чат
+        welcome_text = f"""** МАТЧ создан ! **
+
+Привет, {nick1} и {nick2}!
+Это ваш временный чат для игры.
+
+Нажми кнопку ниже, чтобы присоединиться:"""
+
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": welcome_text,
+                    "parse_mode": "Markdown",
+                    "reply_markup": {
+                        "inline_keyboard": [[
+                            {"text": "💬 Присоединиться к чату", "url": chat_link}
+                        ]]
+                    }
+                }
+            )
+            logger.info("Приветствие отправлено в чат")
+        except Exception as e:
+            logger.error(f"Ошибка отправки приветствия в чат: {e}")
+        
+        # ШАГ 4: Отправляем ссылку в ЛС каждому игроку
+        for tg_id, nick in [(telegram_id1, nick1), (telegram_id2, nick2)]:
+            try:
+                send_msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                msg_data = {
+                    "chat_id": tg_id,
+                    "text": f"🎯 **Матч #{data['match_id']} создан!**\n\nСоперник: {nick2 if nick == nick1 else nick1}\n\nНажми кнопку, чтобы перейти в чат:",
+                    "parse_mode": "Markdown",
+                    "reply_markup": {
+                        "inline_keyboard": [[
+                            {"text": "💬 Перейти в чат", "url": chat_link}
+                        ]]
+                    }
+                }
+                requests.post(send_msg_url, json=msg_data)
+                logger.info(f"Ссылка отправлена {nick}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки {nick}: {e}")
         
         # Сохраняем в БД
         cursor.execute("""
@@ -1260,7 +1250,6 @@ def create_game():
         """, (data['match_id'], player1_id, player2_id, chat_id, chat_link))
         
         game_id = cursor.fetchone()[0]
-        
         conn.commit()
         logger.info(f"Игра создана, ID: {game_id}")
         
@@ -1286,12 +1275,11 @@ def create_game():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    print("🔥 PINGSTER BACKEND - ИСПРАВЛЕННАЯ ВЕРСИЯ")
-    print("✅ ГЛАВНЫЕ ИСПРАВЛЕНИЯ:")
-    print("   - Удаление ОБОИХ игроков из очереди при создании матча")
-    print("   - Упрощенная проверка существующего матча (без лишних условий)")
-    print("   - FOR UPDATE SKIP LOCKED для защиты от race condition")
-    print("   - Коммит транзакции ДО возврата ответа")
-    print("   - Корректная обработка истекших матчей")
+    print("🔥 PINGSTER BACKEND - С ЧАТАМИ!")
+    print("✅ Что работает:")
+    print("   - Мэтчмейкинг (оба получают матч)")
+    print("   - Создание Telegram чатов (новая надежная логика)")
+    print("   - Invite links с кнопками")
+    print("   - Уведомления в ЛС")
     print("\n🚀 Сервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
