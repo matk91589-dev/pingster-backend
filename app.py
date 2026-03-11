@@ -1117,6 +1117,73 @@ def stop_search():
         if conn:
             conn.close()
 
+# ============================================
+# ФУНКЦИЯ ДЛЯ ДОБАВЛЕНИЯ ИГРОКА В ГРУППУ (ВАРИАНТ 2)
+# ============================================
+def add_user_to_group(user_id, username, match_id):
+    """Пытается добавить игрока в группу, если не получается - создает invite link"""
+    try:
+        # Сначала пробуем approveChatJoinRequest
+        add_url = f"https://api.telegram.org/bot{BOT_TOKEN}/approveChatJoinRequest"
+        add_data = {
+            "chat_id": FORUM_GROUP_ID,
+            "user_id": int(user_id)
+        }
+        
+        logger.info(f"🔄 Пробуем добавить игрока {username} ({user_id}) через approve...")
+        add_response = requests.post(add_url, json=add_data)
+        add_result = add_response.json()
+        
+        if add_result.get('ok'):
+            logger.info(f"✅ Игрок {username} ({user_id}) успешно добавлен в группу через approve")
+            return True
+            
+        # Если не сработало, логируем причину
+        logger.warning(f"⚠️ approve не сработал для {username}: {add_result.get('description', 'неизвестная ошибка')}")
+        
+        # Пробуем создать персональную invite link
+        logger.info(f"🔄 Создаем invite link для {username}...")
+        invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
+        invite_data = {
+            "chat_id": FORUM_GROUP_ID,
+            "member_limit": 1,
+            "name": f"match_{match_id}_{username}",
+            "expire_date": int((datetime.utcnow() + timedelta(hours=1)).timestamp())
+        }
+        
+        invite_response = requests.post(invite_url, json=invite_data)
+        invite_result = invite_response.json()
+        
+        if invite_result.get('ok'):
+            invite_link = invite_result['result']['invite_link']
+            logger.info(f"✅ Создана invite link для {username}: {invite_link}")
+            
+            # Отправляем ссылку игроку в ЛС
+            send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            send_data = {
+                "chat_id": int(user_id),
+                "text": f"🎮 **Присоединяйся к чату для матча #{match_id}!**\n\nНажми на ссылку ниже, чтобы войти в группу:\n{invite_link}",
+                "parse_mode": "Markdown"
+            }
+            
+            send_response = requests.post(send_url, json=send_data)
+            if send_response.json().get('ok'):
+                logger.info(f"✅ Invite link отправлена {username} в ЛС")
+            else:
+                logger.warning(f"⚠️ Не удалось отправить invite link {username} в ЛС")
+            
+            return True
+        else:
+            logger.error(f"❌ Не удалось создать invite link для {username}: {invite_result.get('description', 'неизвестная ошибка')}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка при добавлении игрока {username}: {e}")
+        return False
+
+# ============================================
+# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ (ОБНОВЛЕННЫЙ)
+# ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
     logger.info("POST /api/game/create")
@@ -1179,40 +1246,20 @@ def create_game():
         telegram_id2, nick2 = user2
         logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
-        # === НОВАЯ ЛОГИКА: Сначала добавляем игроков в группу ===
-        FORUM_ID = -1003753772298
+        # === ДОБАВЛЯЕМ ИГРОКОВ В ГРУППУ ===
+        logger.info("=== НАЧИНАЕМ ДОБАВЛЕНИЕ ИГРОКОВ В ГРУППУ ===")
         
         # Добавляем первого игрока
-        try:
-            add_user_url = f"https://api.telegram.org/bot{BOT_TOKEN}/approveChatJoinRequest"
-            add_data = {
-                "chat_id": FORUM_ID,
-                "user_id": int(telegram_id1)
-            }
-            add_response = requests.post(add_user_url, json=add_data)
-            if add_response.json().get('ok'):
-                logger.info(f"Игрок {telegram_id1} добавлен в группу")
-            else:
-                logger.warning(f"Не удалось добавить игрока {telegram_id1} в группу: {add_response.json()}")
-        except Exception as e:
-            logger.error(f"Ошибка добавления игрока {telegram_id1}: {e}")
+        add_user_to_group(telegram_id1, nick1, data['match_id'])
         
         # Добавляем второго игрока
-        try:
-            add_user_url = f"https://api.telegram.org/bot{BOT_TOKEN}/approveChatJoinRequest"
-            add_data = {
-                "chat_id": FORUM_ID,
-                "user_id": int(telegram_id2)
-            }
-            add_response = requests.post(add_user_url, json=add_data)
-            if add_response.json().get('ok'):
-                logger.info(f"Игрок {telegram_id2} добавлен в группу")
-            else:
-                logger.warning(f"Не удалось добавить игрока {telegram_id2} в группу: {add_response.json()}")
-        except Exception as e:
-            logger.error(f"Ошибка добавления игрока {telegram_id2}: {e}")
+        add_user_to_group(telegram_id2, nick2, data['match_id'])
         
-        # ШАГ 1: Создаем тему в форум-группе
+        logger.info("=== ЗАВЕРШИЛИ ДОБАВЛЕНИЕ ИГРОКОВ ===")
+        
+        # === СОЗДАЕМ ТЕМУ В ФОРУМ-ГРУППЕ ===
+        FORUM_ID = FORUM_GROUP_ID
+        
         create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
         topic_data = {
             "chat_id": FORUM_ID,
@@ -1231,12 +1278,12 @@ def create_game():
         topic_id = topic_result['result']['message_thread_id']
         logger.info(f"Тема создана, ID: {topic_id}")
         
-        # ШАГ 2: Создаем ссылку на тему
+        # === СОЗДАЕМ ССЫЛКУ НА ТЕМУ ===
         clean_chat_id = str(FORUM_ID).replace('-100', '')
         chat_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
         logger.info(f"Ссылка на тему: {chat_link}")
         
-        # ШАГ 3: Отправляем приветствие в тему
+        # === ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ В ТЕМУ ===
         welcome_text = f"""🎯 **МАТЧ #{data['match_id']} СОЗДАН!**
 
 Привет, {nick1} и {nick2}!
@@ -1258,7 +1305,7 @@ def create_game():
         except Exception as e:
             logger.error(f"Ошибка отправки приветствия: {e}")
         
-        # ШАГ 4: Сохраняем в БД
+        # === СОХРАНЯЕМ В БД ===
         cursor.execute("""
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at)
             VALUES (%s, %s, %s, %s, %s, 'active', NOW())
@@ -1298,7 +1345,7 @@ if __name__ == '__main__':
     print("   - Приветствие в теме")
     print("   - Возврат chat_link для фронта")
     print("   - Защита от дублей (проверка existing_game)")
-    print("   - Автоматическое добавление игроков в группу")
+    print("   - Автоматическое добавление игроков в группу (через approve + invite link)")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print("\n🚀 Сервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
