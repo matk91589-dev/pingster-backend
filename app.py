@@ -1646,9 +1646,15 @@ def create_game():
             conn.close()
 
 # ============================================
-# ЗАПУСК
+# ЗАПУСК (ДЛЯ ПРОДАКШЕНА)
 # ============================================
 if __name__ == '__main__':
+    # Получаем порт из переменных окружения (Railway/Render задают PORT)
+    port = int(os.environ.get('PORT', 5000))
+    
+    # Режим дебага только если явно указано
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
     print("🔥 PINGSTER BACKEND - ФИНАЛЬНАЯ АРХИТЕКТУРА 9.8/10!")
     print("✅ Что работает:")
     print("   - Мэтчмейкинг (оба получают матч)")
@@ -1668,8 +1674,15 @@ if __name__ == '__main__':
     print("\n🚀 Фоновый процесс для закрытия тем запущен...")
     
     # Запускаем фоновый поток для закрытия тем
-    thread = threading.Thread(target=background_worker, daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=background_worker, daemon=True)
+        thread.start()
+        print("✅ Фоновый процесс успешно запущен")
+    except Exception as e:
+        print(f"❌ Ошибка запуска фонового процесса: {e}")
     
-    print("🚀 Сервер запущен на порту 5000")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    print(f"🚀 Сервер запущен на порту {port} (debug={debug})")
+    print(f"📡 Эндпоинты доступны по адресу: http://0.0.0.0:{port}")
+    
+    # Запускаем Flask-приложение
+    app.run(host='0.0.0.0', port=port, debug=debug)
