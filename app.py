@@ -1169,7 +1169,7 @@ def create_game():
         # Используем существующую форум-группу для создания тем под каждый матч
         
         # ID форум-группы (получен ранее)
-        FORUM_ID = -1003800077788
+        FORUM_ID = -1003753772298
         
         # ШАГ 1: Создаем тему в форум-группе
         create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
