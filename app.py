@@ -1134,6 +1134,20 @@ def create_game():
         
         logger.info(f"create_game для match_id={data['match_id']}")
         
+        # === ПРОВЕРКА: уже есть игра для этого match_id? ===
+        cursor.execute("""
+            SELECT id, telegram_chat_link FROM games WHERE match_id = %s
+        """, (data['match_id'],))
+        
+        existing_game = cursor.fetchone()
+        if existing_game:
+            logger.info(f"Игра для match_id={data['match_id']} уже существует")
+            return jsonify({
+                "status": "ok",
+                "game_id": existing_game[0],
+                "chat_link": existing_game[1]
+            })
+        
         # Получаем данные матча
         cursor.execute("""
             SELECT player1_id, player2_id, mode
@@ -1260,6 +1274,7 @@ if __name__ == '__main__':
     print("   - Красивые названия: #ID | ник1 & ник2")
     print("   - Приветствие в теме")
     print("   - Возврат chat_link для фронта")
+    print("   - Защита от дублей (проверка existing_game)")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print("\n🚀 Сервер запущен на порту 5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
