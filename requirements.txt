@@ -1,6 +1,6 @@
-flask
-flask-cors
-gunicorn
-psycopg2-binary
-requests
-pyTelegramBotAPI
+Flask==2.3.3
+Flask-CORS==4.0.0
+psycopg2-binary==2.9.9
+requests==2.31.0
+schedule==1.2.0
+gunicorn==21.2.0  # для продакшена
