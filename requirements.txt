@@ -2,5 +2,4 @@ Flask
 Flask-CORS
 psycopg2-binary
 requests
-schedule
 gunicorn
