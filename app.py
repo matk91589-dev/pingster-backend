@@ -1,24 +1,18 @@
 import sys
 import os
-import threading
-import time
-from datetime import datetime, timedelta
-import random
-import logging
-import requests
-import asyncio
 
 sys.path.append('/app/.local/lib/python3.14/site-packages')
 sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import psycopg
-from psycopg.rows import dict_row
-
-# Telegram bot imports
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
+import psycopg2
+import psycopg2.extras
+import random
+from datetime import datetime, timedelta
+import logging
+import requests
+import time
 
 # Настройка логирования
 logging.basicConfig(
@@ -39,18 +33,15 @@ DB_PORT = os.getenv("DB_PORT", 5432)
 
 # Токен бота
 BOT_TOKEN = "8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8"
+# Username бота (нужно указать правильный)
 BOT_USERNAME = "PingsterBot"
 
-# ID форум-группы
-FORUM_GROUP_ID = -1003753772298
-RULES_TOPIC_ID = 5  # ID темы с правилами
+# ID форум-группы (получен через @getidsbot)
+FORUM_GROUP_ID = -1003753772298 
 
-# ============================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================
 def get_db():
     logger.debug("Подключение к базе данных...")
-    return psycopg.connect(
+    return psycopg2.connect(
         host=DB_HOST,
         database=DB_NAME,
         user=DB_USER,
@@ -79,7 +70,6 @@ def generate_random_nick():
     chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
     return ''.join(random.choice(chars) for _ in range(6))
 
-# Ранги
 RANK_TO_VALUE = {
     'Silver 1': 1000, 'Silver 2': 1100, 'Silver 3': 1200, 'Silver 4': 1300,
     'Silver Elite': 1400, 'Gold Nova 1': 1500, 'Gold Nova 2': 1600,
@@ -98,6 +88,9 @@ RANK_LIST = [
     'Supreme Master First Class', 'Global Elite'
 ]
 
+# ============================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================
 def get_rank_index(rank):
     if rank in RANK_LIST:
         return RANK_LIST.index(rank)
@@ -123,14 +116,17 @@ def get_range_buckets(mode, style, bucket):
     """Возвращает минимальный и максимальный бакет для поиска"""
     if mode == 'faceit':
         return bucket - 4, bucket + 4
+    
     elif mode == 'premier':
         if style == 'tryhard':
             return bucket - 5, bucket + 5
         return None, None
+    
     elif mode in ['mm prime', 'mm public']:
         if style == 'tryhard':
             return None, None
         return None, None
+    
     return None, None
 
 def filter_candidates_by_rank(candidates, player_rank, mode, style):
@@ -149,189 +145,7 @@ def filter_candidates_by_rank(candidates, player_rank, mode, style):
     return filtered
 
 # ============================================
-# ЗАЩИТА ОТ ЧУЖИХ (ВЫКИДЫВАНИЕ ИЗ ЧУЖИХ ТЕМ)
-# ============================================
-def eject_intruder(user_id, topic_id):
-    """Мгновенно выкидывает чужака из темы и отправляет в правила"""
-    try:
-        # Сначала баним (выкидываем)
-        ban_url = f"https://api.telegram.org/bot{BOT_TOKEN}/banChatMember"
-        ban_data = {
-            "chat_id": FORUM_GROUP_ID,
-            "user_id": int(user_id),
-            "until_date": int(time.time()) + 30
-        }
-        requests.post(ban_url, json=ban_data)
-        
-        # Разбаниваем, чтобы мог зайти в свои темы
-        unban_url = f"https://api.telegram.org/bot{BOT_TOKEN}/unbanChatMember"
-        unban_data = {
-            "chat_id": FORUM_GROUP_ID,
-            "user_id": int(user_id),
-            "only_if_banned": True
-        }
-        requests.post(unban_url, json=unban_data)
-        
-        # Отправляем ссылку на правила
-        rules_link = f"https://t.me/c/{str(FORUM_GROUP_ID).replace('-100', '')}/{RULES_TOPIC_ID}"
-        
-        msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        msg_data = {
-            "chat_id": int(user_id),
-            "text": f"⛔ **Вы перешли в чужой матч!**\n\n"
-                    f"Каждая тема в Pingster — личное пространство игроков.\n"
-                    f"Пожалуйста, ознакомьтесь с [правилами сообщества]({rules_link}).\n\n"
-                    f"*Ваше посещение автоматически зафиксировано.*",
-            "parse_mode": "Markdown"
-        }
-        requests.post(msg_url, json=msg_data)
-        
-        # Логируем нарушение
-        log_intrusion(user_id, topic_id)
-        
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при выкидывании чужака {user_id}: {e}")
-        return False
-
-def log_intrusion(user_id, topic_id):
-    """Логирует нарушение в БД"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT INTO intrusions (user_id, topic_id, created_at)
-            VALUES (%s, %s, NOW())
-        """, (str(user_id), str(topic_id)))
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        logger.info(f"🚨 Зафиксировано нарушение: user={user_id}, topic={topic_id}")
-    except Exception as e:
-        logger.error(f"Ошибка логирования нарушения: {e}")
-
-# ============================================
-# УПРАВЛЕНИЕ ТЕМАМИ (ЗАКРЫТИЕ ЧЕРЕЗ 30 МИНУТ)
-# ============================================
-def close_topic(topic_id):
-    """Закрывает тему (только для чтения)"""
-    try:
-        close_url = f"https://api.telegram.org/bot{BOT_TOKEN}/closeForumTopic"
-        close_data = {
-            "chat_id": FORUM_GROUP_ID,
-            "message_thread_id": topic_id
-        }
-        
-        response = requests.post(close_url, json=close_data)
-        if response.json().get('ok'):
-            logger.info(f"✅ Тема {topic_id} закрыта")
-            
-            # Обновляем статус в БД
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE games SET status = 'closed' 
-                WHERE telegram_chat_id = %s
-            """, (str(topic_id),))
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            return True
-        else:
-            logger.error(f"❌ Ошибка закрытия темы {topic_id}: {response.json()}")
-            return False
-    except Exception as e:
-        logger.error(f"Ошибка при закрытии темы: {e}")
-        return False
-
-def check_and_close_topics():
-    """Проверяет и закрывает темы старше 30 минут"""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT telegram_chat_id FROM games 
-            WHERE expires_at < NOW() 
-            AND status = 'active'
-        """)
-        
-        topics_to_close = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        
-        for topic in topics_to_close:
-            close_topic(topic[0])
-            time.sleep(0.5)
-            
-    except Exception as e:
-        logger.error(f"Ошибка в фоновом процессе: {e}")
-
-def background_worker():
-    """Фоновый поток для проверки и закрытия тем"""
-    while True:
-        check_and_close_topics()
-        time.sleep(60)
-
-# ============================================
-# TELEGRAM BOT ОБРАБОТЧИКИ
-# ============================================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
-    user = update.effective_user
-    logger.info(f"Пользователь {user.id} запустил бота")
-    
-    welcome_text = f"""
-🎯 **Добро пожаловать в Pingster, {user.first_name}!**
-
-Найди тиммейта для CS2 за 30 секунд:
-• Свайпай вправо/влево как в Tinder
-• Игроки твоего уровня
-• Без спама и токсиков
-
-👇 **Нажми кнопку ниже, чтобы открыть приложение**
-    """
-    
-    keyboard = [[
-        InlineKeyboardButton(
-            text="🚀 ОТКРЫТЬ PINGSTER",
-            web_app={"url": "https://matk91589-dev-pinster-0b38.twc1.net"}
-        )
-    ]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик ошибок"""
-    logger.error(f"Ошибка в боте: {context.error}")
-
-def run_bot():
-    """Запускает Telegram бота в отдельном потоке"""
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_error_handler(error_handler)
-        
-        logger.info("🚀 Telegram бот запущен и ожидает команды...")
-        application.run_polling()
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска бота: {e}")
-
-# ============================================
-# ПОЛЬЗОВАТЕЛЬСКИЕ ЭНДПОИНТЫ
+# ЭНДПОИНТЫ
 # ============================================
 @app.route('/', methods=['GET'])
 def home():
@@ -921,7 +735,7 @@ def check_match():
         logger.info(f"check_match для игрока {player_id}")
         
         conn = get_db()
-        cursor = conn.cursor(row_factory=dict_row)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # === ШАГ 0: Проверяем существующий матч ===
         logger.info("ШАГ 0: Проверяем существующий матч...")
@@ -936,11 +750,13 @@ def check_match():
         existing_match = cursor.fetchone()
         
         if existing_match:
+            # Проверяем что матч еще активен
             if existing_match['status'] in ['pending', 'accepted'] and existing_match['expires_at'] > datetime.utcnow():
                 logger.info(f"Найден активный матч ID={existing_match['id']}")
                 
                 other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
                 
+                # Получаем данные соперника
                 cursor.execute("""
                     SELECT nick, age, steam_link, faceit_link
                     FROM profiles WHERE player_id = %s
@@ -992,6 +808,7 @@ def check_match():
         current_rank = current['rank']
         current_bucket = current['rating_bucket']
         
+        # Определяем диапазон поиска
         min_bucket, max_bucket = get_range_buckets(current_mode, current_style, current_bucket)
         logger.info(f"Диапазон бакетов: {min_bucket} - {max_bucket}")
         
@@ -1059,7 +876,7 @@ def check_match():
         # === ШАГ 5: Создаем матч ===
         logger.info("ШАГ 5: Создаем матч...")
         now = datetime.utcnow()
-        expires_at = now + timedelta(minutes=30)
+        expires_at = now + timedelta(seconds=30)
         
         cursor.execute("""
             INSERT INTO matches 
@@ -1119,7 +936,7 @@ def match_status(match_id):
     
     try:
         conn = get_db()
-        cursor = conn.cursor(row_factory=dict_row)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         cursor.execute("""
             SELECT status, player1_response, player2_response, expires_at
@@ -1174,7 +991,7 @@ def respond_match():
         logger.info(f"respond_match: игрок {player_id}, матч {data['match_id']}, ответ {data['response']}")
         
         conn = get_db()
-        cursor = conn.cursor(row_factory=dict_row)
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         cursor.execute("""
             SELECT player1_id, player2_id, player1_response, player2_response, expires_at, status
@@ -1301,166 +1118,36 @@ def stop_search():
             conn.close()
 
 # ============================================
-# ЭНДПОИНТЫ ДЛЯ ИСТОРИИ МАТЧЕЙ
+# ФУНКЦИЯ ДЛЯ ДОБАВЛЕНИЯ ИГРОКА В ГРУППУ (ВАРИАНТ 2)
 # ============================================
-@app.route('/api/my-matches', methods=['POST'])
-def my_matches():
-    logger.info("POST /api/my-matches")
-    
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    player_id = get_player_id(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
-    conn = None
-    cursor = None
-    
+def add_user_to_group(user_id, username, match_id):
+    """Пытается добавить игрока в группу, если не получается - создает invite link"""
     try:
-        conn = get_db()
-        cursor = conn.cursor(row_factory=dict_row)
+        # Сначала пробуем approveChatJoinRequest
+        add_url = f"https://api.telegram.org/bot{BOT_TOKEN}/approveChatJoinRequest"
+        add_data = {
+            "chat_id": FORUM_GROUP_ID,
+            "user_id": int(user_id)
+        }
         
-        # Активные матчи
-        cursor.execute("""
-            SELECT m.id, p1.nick as player1, p2.nick as player2, 
-                   g.telegram_chat_link, g.status,
-                   EXTRACT(EPOCH FROM (g.expires_at - NOW())) as time_left
-            FROM matches m
-            JOIN games g ON m.id = g.match_id
-            JOIN profiles p1 ON m.player1_id = p1.player_id
-            JOIN profiles p2 ON m.player2_id = p2.player_id
-            WHERE (m.player1_id = %s OR m.player2_id = %s)
-            AND g.status = 'active'
-            AND g.expires_at > NOW()
-            ORDER BY m.id DESC
-        """, (player_id, player_id))
+        logger.info(f"🔄 Пробуем добавить игрока {username} ({user_id}) через approve...")
+        add_response = requests.post(add_url, json=add_data)
+        add_result = add_response.json()
         
-        active = cursor.fetchall()
+        if add_result.get('ok'):
+            logger.info(f"✅ Игрок {username} ({user_id}) успешно добавлен в группу через approve")
+            return True
+            
+        # Если не сработало, логируем причину
+        logger.warning(f"⚠️ approve не сработал для {username}: {add_result.get('description', 'неизвестная ошибка')}")
         
-        # История
-        cursor.execute("""
-            SELECT m.id, p1.nick as player1, p2.nick as player2, 
-                   g.telegram_chat_link, g.created_at
-            FROM matches m
-            JOIN games g ON m.id = g.match_id
-            JOIN profiles p1 ON m.player1_id = p1.player_id
-            JOIN profiles p2 ON m.player2_id = p2.player_id
-            WHERE (m.player1_id = %s OR m.player2_id = %s)
-            AND g.status = 'closed'
-            ORDER BY m.id DESC
-            LIMIT 50
-        """, (player_id, player_id))
-        
-        history = cursor.fetchall()
-        
-        return jsonify({
-            "status": "ok",
-            "active": [dict(match) for match in active],
-            "history": [dict(match) for match in history]
-        })
-        
-    except Exception as e:
-        logger.error(f"ОШИБКА в my_matches: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
-
-@app.route('/api/active-match', methods=['POST'])
-def active_match():
-    logger.info("POST /api/active-match")
-    
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    player_id = get_player_id(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
-    conn = None
-    cursor = None
-    
-    try:
-        conn = get_db()
-        cursor = conn.cursor(row_factory=dict_row)
-        
-        cursor.execute("""
-            SELECT m.id, p1.nick as player1, p2.nick as player2,
-                   g.telegram_chat_link
-            FROM matches m
-            JOIN games g ON m.id = g.match_id
-            JOIN profiles p1 ON m.player1_id = p1.player_id
-            JOIN profiles p2 ON m.player2_id = p2.player_id
-            WHERE (m.player1_id = %s OR m.player2_id = %s)
-            AND g.status = 'active'
-            AND g.expires_at > NOW()
-            ORDER BY m.id DESC
-            LIMIT 1
-        """, (player_id, player_id))
-        
-        match = cursor.fetchone()
-        
-        if match:
-            return jsonify({
-                "active": True,
-                "match_id": match['id'],
-                "chat_link": match['telegram_chat_link']
-            })
-        else:
-            return jsonify({"active": False})
-        
-    except Exception as e:
-        logger.error(f"ОШИБКА в active_match: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
-
-# ============================================
-# НОВЫЙ ЭНДПОИНТ: ПОЛУЧИТЬ INVITE LINK ДЛЯ МАТЧА
-# ============================================
-@app.route('/api/get-invite-link', methods=['POST'])
-def get_invite_link():
-    logger.info("POST /api/get-invite-link")
-    
-    if not request.json or 'match_id' not in request.json:
-        return jsonify({"error": "Missing match_id"}), 400
-    
-    match_id = request.json['match_id']
-    
-    conn = None
-    cursor = None
-    
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT telegram_chat_id, telegram_chat_link FROM games WHERE match_id = %s
-        """, (match_id,))
-        
-        game = cursor.fetchone()
-        if not game:
-            return jsonify({"error": "Game not found"}), 404
-        
-        topic_id = game[0]
-        chat_link = game[1]
-        
-        # Создаём invite link
+        # Пробуем создать персональную invite link
+        logger.info(f"🔄 Создаем invite link для {username}...")
         invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
         invite_data = {
             "chat_id": FORUM_GROUP_ID,
-            "name": f"match_{match_id}",
-            "member_limit": 2,
+            "member_limit": 1,
+            "name": f"match_{match_id}_{username}",
             "expire_date": int((datetime.utcnow() + timedelta(hours=1)).timestamp())
         }
         
@@ -1469,36 +1156,30 @@ def get_invite_link():
         
         if invite_result.get('ok'):
             invite_link = invite_result['result']['invite_link']
-            logger.info(f"✅ Invite link создан для матча {match_id}: {invite_link}")
+            logger.info(f"✅ Создана invite link для {username}: {invite_link}")
             
-            cursor.execute("""
-                UPDATE games SET invite_link = %s WHERE match_id = %s
-            """, (invite_link, match_id))
-            conn.commit()
+            # Отправляем ссылку игроку в ЛС
+            send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            send_data = {
+                "chat_id": int(user_id),
+                "text": f"🎮 **Присоединяйся к чату для матча #{match_id}!**\n\nНажми на ссылку ниже, чтобы войти в группу:\n{invite_link}",
+                "parse_mode": "Markdown"
+            }
             
-            return jsonify({
-                "status": "ok",
-                "invite_link": invite_link,
-                "chat_link": chat_link,
-                "match_id": match_id
-            })
+            send_response = requests.post(send_url, json=send_data)
+            if send_response.json().get('ok'):
+                logger.info(f"✅ Invite link отправлена {username} в ЛС")
+            else:
+                logger.warning(f"⚠️ Не удалось отправить invite link {username} в ЛС")
+            
+            return True
         else:
-            logger.error(f"❌ Ошибка создания invite link: {invite_result}")
-            return jsonify({
-                "status": "ok",
-                "invite_link": None,
-                "chat_link": chat_link,
-                "match_id": match_id
-            })
-        
+            logger.error(f"❌ Не удалось создать invite link для {username}: {invite_result.get('description', 'неизвестная ошибка')}")
+            return False
+            
     except Exception as e:
-        logger.error(f"ОШИБКА в get_invite_link: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        logger.error(f"❌ Ошибка при добавлении игрока {username}: {e}")
+        return False
 
 # ============================================
 # ЭНДПОИНТ СОЗДАНИЯ ИГРЫ (ОБНОВЛЕННЫЙ)
@@ -1528,15 +1209,10 @@ def create_game():
         existing_game = cursor.fetchone()
         if existing_game:
             logger.info(f"Игра для match_id={data['match_id']} уже существует")
-            
-            cursor.execute("SELECT invite_link FROM games WHERE match_id = %s", (data['match_id'],))
-            invite = cursor.fetchone()
-            
             return jsonify({
                 "status": "ok",
                 "game_id": existing_game[0],
-                "chat_link": existing_game[1],
-                "invite_link": invite[0] if invite else None
+                "chat_link": existing_game[1]
             })
         
         # Получаем данные матча
@@ -1570,7 +1246,18 @@ def create_game():
         telegram_id2, nick2 = user2
         logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
-        # === СОЗДАЕМ ТЕМУ ===
+        # === ДОБАВЛЯЕМ ИГРОКОВ В ГРУППУ ===
+        logger.info("=== НАЧИНАЕМ ДОБАВЛЕНИЕ ИГРОКОВ В ГРУППУ ===")
+        
+        # Добавляем первого игрока
+        add_user_to_group(telegram_id1, nick1, data['match_id'])
+        
+        # Добавляем второго игрока
+        add_user_to_group(telegram_id2, nick2, data['match_id'])
+        
+        logger.info("=== ЗАВЕРШИЛИ ДОБАВЛЕНИЕ ИГРОКОВ ===")
+        
+        # === СОЗДАЕМ ТЕМУ В ФОРУМ-ГРУППЕ ===
         FORUM_ID = FORUM_GROUP_ID
         
         create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
@@ -1591,39 +1278,18 @@ def create_game():
         topic_id = topic_result['result']['message_thread_id']
         logger.info(f"Тема создана, ID: {topic_id}")
         
-        # === ССЫЛКА НА ТЕМУ ===
+        # === СОЗДАЕМ ССЫЛКУ НА ТЕМУ ===
         clean_chat_id = str(FORUM_ID).replace('-100', '')
         chat_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
         logger.info(f"Ссылка на тему: {chat_link}")
         
-        # === INVITE LINK ===
-        invite_link = None
-        try:
-            invite_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createChatInviteLink"
-            invite_data = {
-                "chat_id": FORUM_ID,
-                "name": f"match_{data['match_id']}",
-                "member_limit": 2,
-                "expire_date": int((datetime.utcnow() + timedelta(hours=1)).timestamp())
-            }
-            
-            invite_response = requests.post(invite_url, json=invite_data)
-            invite_result = invite_response.json()
-            
-            if invite_result.get('ok'):
-                invite_link = invite_result['result']['invite_link']
-                logger.info(f"✅ Invite link создан: {invite_link}")
-        except Exception as e:
-            logger.error(f"Ошибка создания invite link: {e}")
-        
-        # === ПРИВЕТСТВИЕ ===
+        # === ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ В ТЕМУ ===
         welcome_text = f"""🎯 **МАТЧ #{data['match_id']} СОЗДАН!**
 
 Привет, {nick1} и {nick2}!
 Это ваш временный чат для игры.
 
-⏳ Чат будет активен 30 минут, затем закроется.
-🔒 Чужие сюда не зайдут — защищено ботом."""
+Договаривайтесь здесь о катке."""
         
         try:
             requests.post(
@@ -1639,48 +1305,21 @@ def create_game():
         except Exception as e:
             logger.error(f"Ошибка отправки приветствия: {e}")
         
-        # === СОХРАНЯЕМ ===
-        expires_at = datetime.utcnow() + timedelta(minutes=30)
-        
+        # === СОХРАНЯЕМ В БД ===
         cursor.execute("""
-            INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, invite_link, status, created_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, 'active', NOW(), %s)
+            INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, 'active', NOW())
             RETURNING id
-        """, (data['match_id'], player1_id, player2_id, topic_id, chat_link, invite_link, expires_at))
+        """, (data['match_id'], player1_id, player2_id, topic_id, chat_link))
         
         game_id = cursor.fetchone()[0]
         conn.commit()
         logger.info(f"Игра создана, ID: {game_id}")
         
-        # === УВЕДОМЛЕНИЯ ===
-        try:
-            for tg_id, nick in [(telegram_id1, nick1), (telegram_id2, nick2)]:
-                msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                
-                if invite_link:
-                    text = f"✅ **Матч #{data['match_id']} создан!**\n\n"
-                    text += f"Соперник: {nick2 if nick == nick1 else nick1}\n\n"
-                    text += f"🔗 [Присоединиться к группе]({invite_link})\n"
-                    text += f"После входа перейди в тему #{data['match_id']}"
-                else:
-                    text = f"✅ **Матч #{data['match_id']} создан!**\n\n"
-                    text += f"Соперник: {nick2 if nick == nick1 else nick1}\n\n"
-                    text += f"🔗 [Перейти в чат]({chat_link})"
-                
-                msg_data = {
-                    "chat_id": int(tg_id),
-                    "text": text,
-                    "parse_mode": "Markdown"
-                }
-                requests.post(msg_url, json=msg_data)
-        except Exception as e:
-            logger.error(f"Ошибка отправки уведомления в ЛС: {e}")
-        
         return jsonify({
             "status": "ok",
             "game_id": game_id,
-            "chat_link": chat_link,
-            "invite_link": invite_link
+            "chat_link": chat_link
         })
     
     except Exception as e:
@@ -1698,46 +1337,15 @@ def create_game():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    
-    print("🔥 PINGSTER BACKEND - ФИНАЛЬНАЯ АРХИТЕКТУРА 9.8/10!")
+    print("🔥 PINGSTER BACKEND - ФОРУМ-ГРУППА!")
     print("✅ Что работает:")
     print("   - Мэтчмейкинг (оба получают матч)")
-    print("   - Форум-группа с темами")
-    print("   - Темы живут 30 минут, потом закрываются (🔒)")
-    print("   - Защита от чужих (автовыброс за 0.1 сек + правила)")
-    print("   - Эндпоинт /api/my-matches для истории")
-    print("   - Эндпоинт /api/active-match для авто-редиректа")
-    print("   - Эндпоинт /api/get-invite-link для получения ссылок")
-    print("   - Двойная ссылка (invite + chat) для одной кнопки")
+    print("   - Создание тем в форум-группе")
     print("   - Красивые названия: #ID | ник1 & ник2")
     print("   - Приветствие в теме")
-    print("   - Возврат chat_link и invite_link для фронта")
+    print("   - Возврат chat_link для фронта")
     print("   - Защита от дублей (проверка existing_game)")
-    print("   - Telegram бот с командой /start")
+    print("   - Автоматическое добавление игроков в группу (через approve + invite link)")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
-    print(f"📌 ID темы с правилами: {RULES_TOPIC_ID}")
-    print("\n🚀 Фоновый процесс для закрытия тем запущен...")
-    
-    # Фоновый поток для закрытия тем
-    try:
-        thread = threading.Thread(target=background_worker, daemon=True)
-        thread.start()
-        print("✅ Фоновый процесс успешно запущен")
-    except Exception as e:
-        print(f"❌ Ошибка запуска фонового процесса: {e}")
-    
-    # Telegram бот в отдельном потоке
-    try:
-        bot_thread = threading.Thread(target=run_bot, daemon=True)
-        bot_thread.start()
-        print("✅ Telegram бот успешно запущен")
-    except Exception as e:
-        print(f"❌ Ошибка запуска Telegram бота: {e}")
-    
-    print(f"🚀 Сервер запущен на порту {port} (debug={debug})")
-    print(f"📡 Эндпоинты доступны по адресу: http://0.0.0.0:{port}")
-    print(f"🤖 Бот доступен: https://t.me/{BOT_USERNAME}")
-    
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    print("\n🚀 Сервер запущен на порту 5000")
+    app.run(host='0.0.0.0', port=5000, debug=True)
