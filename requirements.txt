@@ -1,6 +1,6 @@
-Flask==2.3.3
-Flask-CORS==4.0.0
-psycopg[binary]==3.1.18
-requests==2.31.0
-schedule==1.2.0
-gunicorn==21.2.0
+Flask
+Flask-CORS
+psycopg[binary]
+requests
+schedule
+gunicorn
