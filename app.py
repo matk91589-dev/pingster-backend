@@ -13,8 +13,8 @@ sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 # Настройка логирования
 logging.basicConfig(
@@ -46,7 +46,7 @@ RULES_TOPIC_ID = 5  # ID темы с правилами
 # ============================================
 def get_db():
     logger.debug("Подключение к базе данных...")
-    return psycopg2.connect(
+    return psycopg.connect(
         host=DB_HOST,
         database=DB_NAME,
         user=DB_USER,
@@ -865,7 +865,7 @@ def check_match():
         logger.info(f"check_match для игрока {player_id}")
         
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor(row_factory=dict_row)  # ИСПРАВЛЕНО
         
         # === ШАГ 0: Проверяем существующий матч ===
         logger.info("ШАГ 0: Проверяем существующий матч...")
@@ -1066,7 +1066,7 @@ def match_status(match_id):
     
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor(row_factory=dict_row)  # ИСПРАВЛЕНО
         
         cursor.execute("""
             SELECT status, player1_response, player2_response, expires_at
@@ -1121,7 +1121,7 @@ def respond_match():
         logger.info(f"respond_match: игрок {player_id}, матч {data['match_id']}, ответ {data['response']}")
         
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor(row_factory=dict_row)  # ИСПРАВЛЕНО
         
         cursor.execute("""
             SELECT player1_id, player2_id, player1_response, player2_response, expires_at, status
@@ -1268,7 +1268,7 @@ def my_matches():
     
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor(row_factory=dict_row)  # ИСПРАВЛЕНО
         
         # Активные матчи (последние 30 минут)
         cursor.execute("""
@@ -1336,7 +1336,7 @@ def active_match():
     
     try:
         conn = get_db()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor = conn.cursor(row_factory=dict_row)  # ИСПРАВЛЕНО
         
         cursor.execute("""
             SELECT m.id, p1.nick as player1, p2.nick as player2,
