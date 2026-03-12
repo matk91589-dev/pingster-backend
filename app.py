@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import random
 import logging
 import requests
-import schedule
 
 sys.path.append('/app/.local/lib/python3.14/site-packages')
 sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
@@ -18,7 +17,7 @@ import psycopg2.extras
 
 # Настройка логирования
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -39,24 +38,31 @@ BOT_USERNAME = "PingsterBot"
 
 # ID форум-группы
 FORUM_GROUP_ID = -1003753772298
-RULES_TOPIC_ID = 5  # ID темы с правилами (нужно создать заранее)
+RULES_TOPIC_ID = 5  # ID темы с правилами
 
 # ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
 def get_db():
     logger.debug("Подключение к базе данных...")
-    return psycopg2.connect(
-        host=DB_HOST,
-        database=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        port=DB_PORT
-    )
+    try:
+        return psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            port=DB_PORT,
+            connect_timeout=5
+        )
+    except Exception as e:
+        logger.error(f"Ошибка подключения к БД: {e}")
+        return None
 
 def get_player_id(telegram_id):
     logger.debug(f"Поиск player_id по telegram_id: {telegram_id}")
     conn = get_db()
+    if not conn:
+        return None
     cursor = conn.cursor()
     cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
     result = cursor.fetchone()
@@ -75,7 +81,7 @@ def generate_random_nick():
     chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
     return ''.join(random.choice(chars) for _ in range(6))
 
-# Ранги (оставляем как было)
+# Ранги
 RANK_TO_VALUE = {
     'Silver 1': 1000, 'Silver 2': 1100, 'Silver 3': 1200, 'Silver 4': 1300,
     'Silver Elite': 1400, 'Gold Nova 1': 1500, 'Gold Nova 2': 1600,
@@ -100,7 +106,6 @@ def get_rank_index(rank):
     return 0
 
 def calculate_score(player, candidate, mode):
-    """Вычисляет score совместимости (чем меньше, тем лучше)"""
     player_rating = int(player['rank']) if player['rank'] and player['rank'].isdigit() else 0
     cand_rating = int(candidate['rank']) if candidate['rank'] and candidate['rank'].isdigit() else 0
     
@@ -112,11 +117,9 @@ def calculate_score(player, candidate, mode):
         rating_diff = abs(player_idx - cand_idx) * 100
     
     age_diff = abs(player['age'] - candidate['age']) if candidate['age'] else 0
-    
     return rating_diff + age_diff * 100
 
 def get_range_buckets(mode, style, bucket):
-    """Возвращает минимальный и максимальный бакет для поиска"""
     if mode == 'faceit':
         return bucket - 4, bucket + 4
     elif mode == 'premier':
@@ -130,36 +133,29 @@ def get_range_buckets(mode, style, bucket):
     return None, None
 
 def filter_candidates_by_rank(candidates, player_rank, mode, style):
-    """Фильтрует кандидатов по рангу для MM режимов"""
     if mode not in ['mm prime', 'mm public'] or style != 'tryhard':
         return candidates
-    
     player_idx = get_rank_index(player_rank)
     filtered = []
-    
     for cand in candidates:
         cand_idx = get_rank_index(cand['rank'])
         if abs(cand_idx - player_idx) <= 3:
             filtered.append(cand)
-    
     return filtered
 
 # ============================================
-# ЗАЩИТА ОТ ЧУЖИХ (ВЫКИДЫВАНИЕ ИЗ ЧУЖИХ ТЕМ)
+# ЗАЩИТА ОТ ЧУЖИХ
 # ============================================
 def eject_intruder(user_id, topic_id):
-    """Мгновенно выкидывает чужака из темы и отправляет в правила"""
     try:
-        # Сначала баним (выкидываем)
         ban_url = f"https://api.telegram.org/bot{BOT_TOKEN}/banChatMember"
         ban_data = {
             "chat_id": FORUM_GROUP_ID,
             "user_id": int(user_id),
-            "until_date": int(time.time()) + 30  # На 30 секунд
+            "until_date": int(time.time()) + 30
         }
         requests.post(ban_url, json=ban_data)
         
-        # Разбаниваем, чтобы мог зайти в свои темы
         unban_url = f"https://api.telegram.org/bot{BOT_TOKEN}/unbanChatMember"
         unban_data = {
             "chat_id": FORUM_GROUP_ID,
@@ -168,9 +164,7 @@ def eject_intruder(user_id, topic_id):
         }
         requests.post(unban_url, json=unban_data)
         
-        # Отправляем ссылку на правила
         rules_link = f"https://t.me/c/{str(FORUM_GROUP_ID).replace('-100', '')}/{RULES_TOPIC_ID}"
-        
         msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         msg_data = {
             "chat_id": int(user_id),
@@ -182,51 +176,45 @@ def eject_intruder(user_id, topic_id):
         }
         requests.post(msg_url, json=msg_data)
         
-        # Логируем нарушение
         log_intrusion(user_id, topic_id)
-        
         return True
     except Exception as e:
         logger.error(f"Ошибка при выкидывании чужака {user_id}: {e}")
         return False
 
 def log_intrusion(user_id, topic_id):
-    """Логирует нарушение в БД"""
     try:
         conn = get_db()
+        if not conn:
+            return
         cursor = conn.cursor()
-        
         cursor.execute("""
             INSERT INTO intrusions (user_id, topic_id, created_at)
             VALUES (%s, %s, NOW())
         """, (str(user_id), str(topic_id)))
-        
         conn.commit()
         cursor.close()
         conn.close()
-        
         logger.info(f"🚨 Зафиксировано нарушение: user={user_id}, topic={topic_id}")
     except Exception as e:
         logger.error(f"Ошибка логирования нарушения: {e}")
 
 # ============================================
-# УПРАВЛЕНИЕ ТЕМАМИ (ЗАКРЫТИЕ ЧЕРЕЗ 30 МИНУТ)
+# УПРАВЛЕНИЕ ТЕМАМИ
 # ============================================
 def close_topic(topic_id):
-    """Закрывает тему (только для чтения)"""
     try:
         close_url = f"https://api.telegram.org/bot{BOT_TOKEN}/closeForumTopic"
         close_data = {
             "chat_id": FORUM_GROUP_ID,
             "message_thread_id": topic_id
         }
-        
         response = requests.post(close_url, json=close_data)
         if response.json().get('ok'):
             logger.info(f"✅ Тема {topic_id} закрыта")
-            
-            # Обновляем статус в БД
             conn = get_db()
+            if not conn:
+                return False
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE games SET status = 'closed' 
@@ -235,7 +223,6 @@ def close_topic(topic_id):
             conn.commit()
             cursor.close()
             conn.close()
-            
             return True
         else:
             logger.error(f"❌ Ошибка закрытия темы {topic_id}: {response.json()}")
@@ -245,37 +232,36 @@ def close_topic(topic_id):
         return False
 
 def check_and_close_topics():
-    """Проверяет и закрывает темы старше 30 минут"""
     try:
         conn = get_db()
+        if not conn:
+            return
         cursor = conn.cursor()
-        
-        # Ищем темы, которые пора закрыть
         cursor.execute("""
             SELECT telegram_chat_id FROM games 
             WHERE expires_at < NOW() 
             AND status = 'active'
         """)
-        
         topics_to_close = cursor.fetchall()
         cursor.close()
         conn.close()
-        
         for topic in topics_to_close:
             close_topic(topic[0])
-            time.sleep(0.5)  # Не ддосим Telegram
-            
+            time.sleep(0.5)
     except Exception as e:
         logger.error(f"Ошибка в фоновом процессе: {e}")
 
 def background_worker():
-    """Фоновый поток для проверки и закрытия тем"""
+    logger.info("🚀 Фоновый поток для закрытия тем запущен")
     while True:
-        check_and_close_topics()
-        time.sleep(60)  # Проверяем каждую минуту
+        try:
+            check_and_close_topics()
+        except Exception as e:
+            logger.error(f"Ошибка в цикле background_worker: {e}")
+        time.sleep(60)
 
 # ============================================
-# ПОЛЬЗОВАТЕЛЬСКИЕ ЭНДПОИНТЫ (БЕЗ ИЗМЕНЕНИЙ)
+# ПОЛЬЗОВАТЕЛЬСКИЕ ЭНДПОИНТЫ
 # ============================================
 @app.route('/', methods=['GET'])
 def home():
@@ -298,6 +284,8 @@ def init_user():
     
     try:
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (data['telegram_id'],))
@@ -363,6 +351,8 @@ def get_profile():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -411,6 +401,8 @@ def update_profile():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -458,6 +450,8 @@ def save_avatar():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("UPDATE profiles SET avatar = %s WHERE player_id = %s", (data.get('avatar'), player_id))
@@ -489,6 +483,8 @@ def get_balance():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("SELECT pingcoins FROM profiles WHERE player_id = %s", (player_id,))
@@ -522,6 +518,8 @@ def buy_case():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("SELECT pingcoins FROM profiles WHERE player_id = %s", (player_id,))
@@ -573,6 +571,8 @@ def get_inventory():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -624,6 +624,8 @@ def open_case():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -678,6 +680,8 @@ def update_item_status():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -728,6 +732,8 @@ def delete_item():
             return jsonify({"error": "User not found"}), 404
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -771,6 +777,8 @@ def start_search():
     
     try:
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         player_id = get_player_id(data['telegram_id'])
@@ -865,6 +873,8 @@ def check_match():
         logger.info(f"check_match для игрока {player_id}")
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         # === ШАГ 0: Проверяем существующий матч ===
@@ -1066,6 +1076,8 @@ def match_status(match_id):
     
     try:
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         cursor.execute("""
@@ -1121,6 +1133,8 @@ def respond_match():
         logger.info(f"respond_match: игрок {player_id}, матч {data['match_id']}, ответ {data['response']}")
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         cursor.execute("""
@@ -1228,6 +1242,8 @@ def stop_search():
         logger.info(f"stop_search для игрока {player_id}")
         
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
@@ -1248,7 +1264,7 @@ def stop_search():
             conn.close()
 
 # ============================================
-# НОВЫЙ ЭНДПОИНТ: МОИ МАТЧИ (ДЛЯ ИСТОРИИ)
+# ЭНДПОИНТЫ ДЛЯ ИСТОРИИ МАТЧЕЙ
 # ============================================
 @app.route('/api/my-matches', methods=['POST'])
 def my_matches():
@@ -1268,9 +1284,11 @@ def my_matches():
     
     try:
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
-        # Активные матчи (последние 30 минут)
+        # Активные матчи
         cursor.execute("""
             SELECT m.id, p1.nick as player1, p2.nick as player2, 
                    g.telegram_chat_link, g.status,
@@ -1287,7 +1305,7 @@ def my_matches():
         
         active = cursor.fetchall()
         
-        # История (завершенные матчи)
+        # История
         cursor.execute("""
             SELECT m.id, p1.nick as player1, p2.nick as player2, 
                    g.telegram_chat_link, g.created_at
@@ -1318,9 +1336,6 @@ def my_matches():
         if conn:
             conn.close()
 
-# ============================================
-# НОВЫЙ ЭНДПОИНТ: ПРОВЕРКА АКТИВНОГО МАТЧА
-# ============================================
 @app.route('/api/active-match', methods=['POST'])
 def active_match():
     logger.info("POST /api/active-match")
@@ -1339,6 +1354,8 @@ def active_match():
     
     try:
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
         cursor.execute("""
@@ -1376,7 +1393,7 @@ def active_match():
             conn.close()
 
 # ============================================
-# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ (ОБНОВЛЕННЫЙ)
+# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1391,6 +1408,8 @@ def create_game():
     
     try:
         conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
         logger.info(f"create_game для match_id={data['match_id']}")
@@ -1440,7 +1459,7 @@ def create_game():
         telegram_id2, nick2 = user2
         logger.info(f"Telegram IDs: {telegram_id1}, {telegram_id2}")
         
-        # === СОЗДАЕМ ТЕМУ В ФОРУМ-ГРУППЕ ===
+        # === СОЗДАЕМ ТЕМУ ===
         FORUM_ID = FORUM_GROUP_ID
         
         create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
@@ -1461,12 +1480,12 @@ def create_game():
         topic_id = topic_result['result']['message_thread_id']
         logger.info(f"Тема создана, ID: {topic_id}")
         
-        # === СОЗДАЕМ ССЫЛКУ НА ТЕМУ ===
+        # === ССЫЛКА НА ТЕМУ ===
         clean_chat_id = str(FORUM_ID).replace('-100', '')
         chat_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
         logger.info(f"Ссылка на тему: {chat_link}")
         
-        # === ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ В ТЕМУ ===
+        # === ПРИВЕТСТВИЕ ===
         welcome_text = f"""🎯 **МАТЧ #{data['match_id']} СОЗДАН!**
 
 Привет, {nick1} и {nick2}!
@@ -1489,7 +1508,7 @@ def create_game():
         except Exception as e:
             logger.error(f"Ошибка отправки приветствия: {e}")
         
-        # === СОХРАНЯЕМ В БД ===
+        # === СОХРАНЯЕМ ===
         expires_at = datetime.utcnow() + timedelta(minutes=30)
         
         cursor.execute("""
@@ -1502,7 +1521,7 @@ def create_game():
         conn.commit()
         logger.info(f"Игра создана, ID: {game_id}")
         
-        # Отправляем уведомление игрокам в ЛС
+        # === УВЕДОМЛЕНИЯ ===
         try:
             for tg_id, nick in [(telegram_id1, nick1), (telegram_id2, nick2)]:
                 msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -1538,6 +1557,8 @@ def create_game():
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    
     print("🔥 PINGSTER BACKEND - ФИНАЛЬНАЯ АРХИТЕКТУРА 9.8/10!")
     print("✅ Что работает:")
     print("   - Мэтчмейкинг (оба получают матч)")
@@ -1552,11 +1573,15 @@ if __name__ == '__main__':
     print("   - Защита от дублей (проверка existing_game)")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print(f"📌 ID темы с правилами: {RULES_TOPIC_ID}")
-    print("\n🚀 Фоновый процесс для закрытия тем запущен...")
+    print(f"\n🚀 Сервер будет запущен на порту {port}")
     
-    # Запускаем фоновый поток для закрытия тем
-    thread = threading.Thread(target=background_worker, daemon=True)
-    thread.start()
+    # Запускаем фоновый поток
+    try:
+        thread = threading.Thread(target=background_worker, daemon=True)
+        thread.start()
+        print("✅ Фоновый процесс для закрытия тем запущен")
+    except Exception as e:
+        print(f"❌ Ошибка запуска фонового процесса: {e}")
     
-    print("🚀 Сервер запущен на порту 5000")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Запускаем Flask (debug=False для продакшена)
+    app.run(host='0.0.0.0', port=port, debug=False)
