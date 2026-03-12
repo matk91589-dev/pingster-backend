@@ -1,7 +1,6 @@
 Flask
 Flask-CORS
-psycopg[binary]
+psycopg2
 requests
-python-telegram-bot
 gunicorn
 schedule
