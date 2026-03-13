@@ -1155,6 +1155,9 @@ def match_status(match_id):
         if conn:
             conn.close()
 
+# ============================================
+# ИСПРАВЛЕННЫЙ respond_match
+# ============================================
 @app.route('/api/match/respond', methods=['POST'])
 def respond_match():
     logger.info("POST /api/match/respond")
@@ -1178,9 +1181,10 @@ def respond_match():
             return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
+        # Блокируем строку матча для обновления
         cursor.execute("""
             SELECT player1_id, player2_id, player1_response, player2_response, expires_at, status
-            FROM matches WHERE id = %s
+            FROM matches WHERE id = %s FOR UPDATE
         """, (data['match_id'],))
         
         match = cursor.fetchone()
@@ -1211,6 +1215,7 @@ def respond_match():
         else:
             return jsonify({"error": "User not in this match"}), 403
         
+        # Получаем обновленные ответы
         cursor.execute("SELECT player1_response, player2_response, expires_at FROM matches WHERE id = %s", (data['match_id'],))
         responses = cursor.fetchone()
         
@@ -1226,7 +1231,7 @@ def respond_match():
             logger.info("Матч отклонен")
             cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
             
-            # ИСПРАВЛЕНО: 2 минуты на поиск при возврате в очередь, всё в UTC
+            # Возвращаем обоих в очередь
             now = datetime.utcnow()
             expires_at = now + timedelta(minutes=2)
             
@@ -1434,7 +1439,7 @@ def active_match():
             conn.close()
 
 # ============================================
-# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ - ИСПРАВЛЕН
+# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ - УСИЛЕННАЯ ЗАЩИТА
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1444,6 +1449,7 @@ def create_game():
         return jsonify({"error": "Missing match_id"}), 400
     
     data = request.json
+    match_id = data['match_id']
     conn = None
     cursor = None
     
@@ -1453,34 +1459,72 @@ def create_game():
             return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor()
         
-        logger.info(f"create_game для match_id={data['match_id']}")
+        logger.info(f"create_game для match_id={match_id}")
         
-        # === ПРОВЕРКА: уже есть игра для этого match_id? ===
+        # ========== УСИЛЕННАЯ ЗАЩИТА ОТ ДВОЙНОГО СОЗДАНИЯ ==========
+        
+        # Пытаемся получить advisory lock для этого match_id
+        # Используем хеш чтобы получить число в пределах integer
+        lock_id = (hash(f"game_create_{match_id}") % 1000000) + 1000000
+        cursor.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
+        lock_result = cursor.fetchone()
+        
+        if not lock_result or not lock_result[0]:
+            logger.warning(f"Не удалось получить блокировку для match_id={match_id}, возможно игра уже создается")
+            
+            # Ждем немного и проверяем существующую игру
+            time.sleep(0.3)
+            cursor.execute("""
+                SELECT id, telegram_chat_link FROM games WHERE match_id = %s
+            """, (match_id,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                logger.info(f"Игра уже создана другим запросом, возвращаем существующую")
+                return jsonify({
+                    "status": "ok",
+                    "game_id": existing[0],
+                    "chat_link": existing[1],
+                    "already_exists": True
+                })
+            
+            return jsonify({"error": "Game creation in progress"}), 409
+        
+        # Двойная проверка: уже есть игра для этого match_id?
         cursor.execute("""
             SELECT id, telegram_chat_link FROM games WHERE match_id = %s
-        """, (data['match_id'],))
+        """, (match_id,))
         
         existing_game = cursor.fetchone()
         if existing_game:
-            logger.info(f"Игра для match_id={data['match_id']} уже существует, возвращаем существующую")
+            logger.info(f"Игра для match_id={match_id} уже существует, возвращаем существующую")
+            
+            # Освобождаем блокировку
+            cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+            
             return jsonify({
                 "status": "ok",
                 "game_id": existing_game[0],
                 "chat_link": existing_game[1],
-                "already_exists": True  # ← ДОБАВЛЕН ФЛАГ
+                "already_exists": True
             })
         
-        # Получаем данные матча
+        # Получаем данные матча с блокировкой строки
         cursor.execute("""
             SELECT player1_id, player2_id, mode
             FROM matches
             WHERE id = %s AND status = 'accepted'
-        """, (data['match_id'],))
+            FOR UPDATE
+        """, (match_id,))
         
         match = cursor.fetchone()
         
         if not match:
-            logger.error(f"Match not found or not accepted: {data['match_id']}")
+            logger.error(f"Match not found or not accepted: {match_id}")
+            
+            # Освобождаем блокировку
+            cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+            
             return jsonify({"error": "Match not found or not accepted"}), 404
         
         player1_id, player2_id = match[0], match[1]
@@ -1495,6 +1539,10 @@ def create_game():
         
         if not user1 or not user2:
             logger.error("Users not found")
+            
+            # Освобождаем блокировку
+            cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+            
             return jsonify({"error": "Users not found"}), 404
         
         telegram_id1, nick1 = user1
@@ -1507,16 +1555,20 @@ def create_game():
         create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
         topic_data = {
             "chat_id": FORUM_ID,
-            "name": f"#{data['match_id']} | {nick1} & {nick2}",
+            "name": f"#{match_id} | {nick1} & {nick2}",
             "icon_color": 0x6FB9F0
         }
         
-        logger.info(f"Создаем тему для матча #{data['match_id']}...")
+        logger.info(f"Создаем тему для матча #{match_id}...")
         topic_response = requests.post(create_topic_url, json=topic_data)
         topic_result = topic_response.json()
         
         if not topic_result.get('ok'):
             logger.error(f"Failed to create forum topic: {topic_result}")
+            
+            # Освобождаем блокировку
+            cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+            
             return jsonify({"error": "Failed to create chat"}), 500
         
         topic_id = topic_result['result']['message_thread_id']
@@ -1528,7 +1580,7 @@ def create_game():
         logger.info(f"Ссылка на тему: {chat_link}")
         
         # === ПРИВЕТСТВИЕ ===
-        welcome_text = f"""🎯 **МАТЧ #{data['match_id']} СОЗДАН!**
+        welcome_text = f"""🎯 **МАТЧ #{match_id} СОЗДАН!**
 
 Привет, {nick1} и {nick2}!
 Это ваш временный чат для игры.
@@ -1557,7 +1609,7 @@ def create_game():
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at, expires_at)
             VALUES (%s, %s, %s, %s, %s, 'active', (NOW() AT TIME ZONE 'UTC'), %s)
             RETURNING id
-        """, (data['match_id'], player1_id, player2_id, topic_id, chat_link, expires_at))
+        """, (match_id, player1_id, player2_id, topic_id, chat_link, expires_at))
         
         game_id = cursor.fetchone()[0]
         conn.commit()
@@ -1569,7 +1621,7 @@ def create_game():
                 msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                 msg_data = {
                     "chat_id": int(tg_id),
-                    "text": f"✅ **Матч #{data['match_id']} создан!**\n\n"
+                    "text": f"✅ **Матч #{match_id} создан!**\n\n"
                             f"Соперник: {nick2 if nick == nick1 else nick1}\n\n"
                             f"🔗 [Перейти в чат]({chat_link})",
                     "parse_mode": "Markdown"
@@ -1577,6 +1629,9 @@ def create_game():
                 requests.post(msg_url, json=msg_data)
         except Exception as e:
             logger.error(f"Ошибка отправки уведомления в ЛС: {e}")
+        
+        # Освобождаем блокировку
+        cursor.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
         
         return jsonify({
             "status": "ok",
@@ -1612,7 +1667,7 @@ if __name__ == '__main__':
     print("   - Красивые названия: #ID | ник1 & ник2")
     print("   - Приветствие в теме")
     print("   - Возврат chat_link для фронта")
-    print("   - Защита от дублей (проверка existing_game + флаг already_exists)")
+    print("   - УСИЛЕННАЯ защита от дублей (advisory lock + FOR UPDATE)")
     print("   - Фоновый поток для очистки очереди поиска (каждые 5 секунд)")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print(f"📌 ID темы с правилами: {RULES_TOPIC_ID}")
