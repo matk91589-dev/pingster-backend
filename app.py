@@ -1023,7 +1023,7 @@ def check_match():
         # === ШАГ 5: Создаем матч ===
         logger.info("ШАГ 5: Создаем матч...")
         now = datetime.utcnow()
-        expires_at = now + timedelta(seconds=30)  # ⚡ 30 СЕКУНД НА ПРИНЯТИЕ!
+        expires_at = now + timedelta(seconds=30) 
         
         cursor.execute("""
             INSERT INTO matches 
