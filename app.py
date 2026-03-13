@@ -825,11 +825,11 @@ def start_search():
         # Удаляем старые записи
         cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
         
-        # Создаем новую запись
+        # ИСПРАВЛЕНО: 30 секунд вместо 1 минуты
         cursor.execute("""
             INSERT INTO search_queue 
             (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '1 minute')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '30 seconds')
             RETURNING id
         """, (
             player_id, 
@@ -1023,7 +1023,7 @@ def check_match():
         # === ШАГ 5: Создаем матч ===
         logger.info("ШАГ 5: Создаем матч...")
         now = datetime.utcnow()
-        expires_at = now + timedelta(seconds=30) 
+        expires_at = now + timedelta(seconds=30)  # 30 секунд на принятие
         
         cursor.execute("""
             INSERT INTO matches 
@@ -1192,9 +1192,9 @@ def respond_match():
             logger.info("Матч отклонен")
             cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
             
-            # Возвращаем обоих в очередь
+            # ИСПРАВЛЕНО: 30 секунд вместо 1 минуты
             now = datetime.utcnow()
-            expires_at = now + timedelta(minutes=1)
+            expires_at = now + timedelta(seconds=30)
             
             cursor.execute("""
                 INSERT INTO search_queue 
@@ -1516,7 +1516,7 @@ def create_game():
             logger.error(f"Ошибка отправки приветствия: {e}")
         
         # === СОХРАНЯЕМ ===
-        expires_at = datetime.utcnow() + timedelta(minutes=30)
+        expires_at = datetime.utcnow() + timedelta(minutes=30)  # 30 минут на чат
         
         cursor.execute("""
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at, expires_at)
