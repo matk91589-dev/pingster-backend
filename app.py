@@ -12,7 +12,7 @@ BUILD_VERSION = int(time.time())
 sys.path.append('/app/.local/lib/python3.14/site-packages')
 sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template 
 from flask_cors import CORS
 import psycopg2
 import psycopg2.extras
