@@ -263,6 +263,40 @@ def background_worker():
         time.sleep(60)
 
 # ============================================
+# НОВЫЙ ФОНОВЫЙ ПОТОК ДЛЯ ОЧИСТКИ ОЧЕРЕДИ
+# ============================================
+def clean_search_queue():
+    """Удаляет истекшие записи из search_queue"""
+    try:
+        conn = get_db()
+        if not conn:
+            return
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM search_queue 
+            WHERE expires_at < NOW()
+            RETURNING id
+        """)
+        deleted = cursor.rowcount
+        if deleted > 0:
+            logger.info(f"🧹 Очищено {deleted} истекших записей из очереди поиска")
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка при очистке очереди: {e}")
+
+def queue_cleaner_worker():
+    """Фоновый поток для очистки очереди каждые 5 секунд"""
+    logger.info("🧹 Запущен фоновый поток для очистки очереди поиска")
+    while True:
+        try:
+            clean_search_queue()
+        except Exception as e:
+            logger.error(f"Ошибка в цикле queue_cleaner_worker: {e}")
+        time.sleep(5)  # Проверяем каждые 5 секунд
+
+# ============================================
 # ПОЛЬЗОВАТЕЛЬСКИЕ ЭНДПОИНТЫ
 # ============================================
 @app.route('/', methods=['GET'])
@@ -825,11 +859,11 @@ def start_search():
         # Удаляем старые записи
         cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
         
-        # ИСПРАВЛЕНО: 30 секунд вместо 1 минуты
+        # ИСПРАВЛЕНО: 2 минуты на поиск
         cursor.execute("""
             INSERT INTO search_queue 
             (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '30 seconds')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '2 minutes')
             RETURNING id
         """, (
             player_id, 
@@ -1192,9 +1226,9 @@ def respond_match():
             logger.info("Матч отклонен")
             cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
             
-            # ИСПРАВЛЕНО: 30 секунд вместо 1 минуты
+            # ИСПРАВЛЕНО: 2 минуты на поиск при возврате в очередь
             now = datetime.utcnow()
-            expires_at = now + timedelta(seconds=30)
+            expires_at = now + timedelta(minutes=2)
             
             cursor.execute("""
                 INSERT INTO search_queue 
@@ -1578,17 +1612,25 @@ if __name__ == '__main__':
     print("   - Приветствие в теме")
     print("   - Возврат chat_link для фронта")
     print("   - Защита от дублей (проверка existing_game)")
+    print("   - Фоновый поток для очистки очереди поиска (каждые 5 секунд)")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print(f"📌 ID темы с правилами: {RULES_TOPIC_ID}")
     print(f"\n🚀 Сервер будет запущен на порту {port}")
     
-    # Запускаем фоновый поток
+    # Запускаем фоновые потоки
     try:
         thread = threading.Thread(target=background_worker, daemon=True)
         thread.start()
         print("✅ Фоновый процесс для закрытия тем запущен")
     except Exception as e:
-        print(f"❌ Ошибка запуска фонового процесса: {e}")
+        print(f"❌ Ошибка запуска фонового процесса для тем: {e}")
+    
+    try:
+        queue_thread = threading.Thread(target=queue_cleaner_worker, daemon=True)
+        queue_thread.start()
+        print("✅ Фоновый процесс для очистки очереди поиска запущен")
+    except Exception as e:
+        print(f"❌ Ошибка запуска фонового процесса для очереди: {e}")
     
     # Запускаем Flask (debug=False для продакшена)
     app.run(host='0.0.0.0', port=port, debug=False)
