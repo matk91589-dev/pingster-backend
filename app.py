@@ -1023,7 +1023,7 @@ def check_match():
         # === ШАГ 5: Создаем матч ===
         logger.info("ШАГ 5: Создаем матч...")
         now = datetime.utcnow()
-        expires_at = now + timedelta(minutes=30)  # 30 минут на матч
+        expires_at = now + timedelta(seconds=30)  # ⚡ 30 СЕКУНД НА ПРИНЯТИЕ!
         
         cursor.execute("""
             INSERT INTO matches 
@@ -1033,7 +1033,7 @@ def check_match():
         """, (player_id, best_candidate['player_id'], current_mode, expires_at))
         
         match_id = cursor.fetchone()['id']
-        logger.info(f"Создан матч ID={match_id}")
+        logger.info(f"Создан матч ID={match_id}, expires_at={expires_at}")
         
         # Удаляем ОБОИХ из очереди
         cursor.execute("""
