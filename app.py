@@ -961,8 +961,8 @@ def check_match():
                         "match_found": True,
                         "match_id": existing_match['id'],
                         "opponent": opponent,
-                        "expires_at": existing_match['expires_at'].isoformat(),
-                        "server_time": datetime.utcnow().isoformat()
+                        "expires_at": existing_match['expires_at'].isoformat() + "Z",  # ← ДОБАВЛЕНО + "Z"
+                        "server_time": datetime.utcnow().isoformat() + "Z"             # ← ДОБАВЛЕНО + "Z"
                     })
         
         # === ШАГ 1: Получаем данные текущего игрока из очереди ===
@@ -1093,8 +1093,8 @@ def check_match():
             "match_found": True,
             "match_id": match_id,
             "opponent": opponent,
-            "expires_at": expires_at.isoformat(),
-            "server_time": now.isoformat()
+            "expires_at": expires_at.isoformat() + "Z",  # ← ДОБАВЛЕНО + "Z"
+            "server_time": now.isoformat() + "Z"         # ← ДОБАВЛЕНО + "Z"
         })
     
     except Exception as e:
@@ -1138,12 +1138,12 @@ def match_status(match_id):
         if match['player1_response'] == 'accept' and match['player2_response'] == 'accept':
             return jsonify({
                 "status": "both_accepted",
-                "expires_at": match['expires_at'].isoformat() if match['expires_at'] else None
+                "expires_at": match['expires_at'].isoformat() + "Z" if match['expires_at'] else None
             })
         
         return jsonify({
             "status": match['status'],
-            "expires_at": match['expires_at'].isoformat() if match['expires_at'] else None
+            "expires_at": match['expires_at'].isoformat() + "Z" if match['expires_at'] else None
         })
     
     except Exception as e:
