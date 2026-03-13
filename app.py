@@ -192,7 +192,7 @@ def log_intrusion(user_id, topic_id):
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO intrusions (user_id, topic_id, created_at)
-            VALUES (%s, %s, NOW())
+            VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
         """, (str(user_id), str(topic_id)))
         conn.commit()
         cursor.close()
@@ -241,7 +241,7 @@ def check_and_close_topics():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT telegram_chat_id FROM games 
-            WHERE expires_at < NOW() 
+            WHERE expires_at < (NOW() AT TIME ZONE 'UTC')
             AND status = 'active'
         """)
         topics_to_close = cursor.fetchall()
@@ -274,7 +274,7 @@ def clean_search_queue():
         cursor = conn.cursor()
         cursor.execute("""
             DELETE FROM search_queue 
-            WHERE expires_at < NOW()
+            WHERE expires_at < (NOW() AT TIME ZONE 'UTC')
             RETURNING id
         """)
         deleted = cursor.rowcount
@@ -336,7 +336,7 @@ def init_user():
             player_id = generate_player_id()
             cursor.execute("""
                 INSERT INTO users (telegram_id, username, player_id, last_active, is_online)
-                VALUES (%s, %s, %s, NOW(), true)
+                VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'), true)
                 RETURNING player_id
             """, (data['telegram_id'], data.get('username', 'no_username'), player_id))
             player_id = cursor.fetchone()[0]
@@ -351,7 +351,7 @@ def init_user():
             return jsonify({"status": "ok", "new_user": True, "player_id": player_id, "nick": nick, "pingcoins": 1000})
         else:
             player_id = result[0]
-            cursor.execute("UPDATE users SET last_active = NOW(), is_online = true WHERE player_id = %s", (player_id,))
+            cursor.execute("UPDATE users SET last_active = (NOW() AT TIME ZONE 'UTC'), is_online = true WHERE player_id = %s", (player_id,))
             
             cursor.execute("SELECT nick, pingcoins FROM profiles WHERE player_id = %s", (player_id,))
             profile = cursor.fetchone()
@@ -452,7 +452,7 @@ def update_profile():
                 age = COALESCE(%s, age),
                 steam_link = COALESCE(%s, steam_link),
                 faceit_link = COALESCE(%s, faceit_link),
-                updated_at = NOW()
+                updated_at = (NOW() AT TIME ZONE 'UTC')
             WHERE player_id = %s
         """, (
             data.get('nick'),
@@ -836,7 +836,7 @@ def start_search():
             SELECT id FROM matches 
             WHERE (player1_id = %s OR player2_id = %s) 
             AND status IN ('pending', 'accepted')
-            AND expires_at > NOW()
+            AND expires_at > (NOW() AT TIME ZONE 'UTC')
         """, (player_id, player_id))
         if cursor.fetchone():
             logger.warning(f"Игрок {player_id} уже в активном матче")
@@ -859,11 +859,11 @@ def start_search():
         # Удаляем старые записи
         cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
         
-        # ИСПРАВЛЕНО: 2 минуты на поиск
+        # ИСПРАВЛЕНО: 2 минуты на поиск, всё в UTC
         cursor.execute("""
             INSERT INTO search_queue 
             (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '2 minutes')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC' + INTERVAL '2 minutes'))
             RETURNING id
         """, (
             player_id, 
@@ -969,7 +969,7 @@ def check_match():
         logger.info("ШАГ 1: Проверяем очередь поиска...")
         cursor.execute("""
             SELECT * FROM search_queue 
-            WHERE player_id = %s AND expires_at > NOW()
+            WHERE player_id = %s AND expires_at > (NOW() AT TIME ZONE 'UTC')
             ORDER BY joined_at DESC
             LIMIT 1
             FOR UPDATE
@@ -1005,7 +1005,7 @@ def check_match():
             JOIN profiles p ON sq.player_id = p.player_id
             WHERE sq.mode = %s 
             AND sq.player_id != %s
-            AND sq.expires_at > NOW()
+            AND sq.expires_at > (NOW() AT TIME ZONE 'UTC')
         """
         params = [current_mode, player_id]
         
@@ -1046,7 +1046,7 @@ def check_match():
         # === ШАГ 4: Проверяем кандидата ===
         cursor.execute("""
             SELECT id FROM search_queue 
-            WHERE player_id = %s AND expires_at > NOW()
+            WHERE player_id = %s AND expires_at > (NOW() AT TIME ZONE 'UTC')
             FOR UPDATE
         """, (best_candidate['player_id'],))
         
@@ -1062,7 +1062,7 @@ def check_match():
         cursor.execute("""
             INSERT INTO matches 
             (player1_id, player2_id, mode, created_at, expires_at, status)
-            VALUES (%s, %s, %s, NOW(), %s, 'pending')
+            VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'), %s, 'pending')
             RETURNING id
         """, (player_id, best_candidate['player_id'], current_mode, expires_at))
         
@@ -1226,7 +1226,7 @@ def respond_match():
             logger.info("Матч отклонен")
             cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
             
-            # ИСПРАВЛЕНО: 2 минуты на поиск при возврате в очередь
+            # ИСПРАВЛЕНО: 2 минуты на поиск при возврате в очередь, всё в UTC
             now = datetime.utcnow()
             expires_at = now + timedelta(minutes=2)
             
@@ -1333,14 +1333,14 @@ def my_matches():
         cursor.execute("""
             SELECT m.id, p1.nick as player1, p2.nick as player2, 
                    g.telegram_chat_link, g.status,
-                   EXTRACT(EPOCH FROM (g.expires_at - NOW())) as time_left
+                   EXTRACT(EPOCH FROM (g.expires_at - (NOW() AT TIME ZONE 'UTC'))) as time_left
             FROM matches m
             JOIN games g ON m.id = g.match_id
             JOIN profiles p1 ON m.player1_id = p1.player_id
             JOIN profiles p2 ON m.player2_id = p2.player_id
             WHERE (m.player1_id = %s OR m.player2_id = %s)
             AND g.status = 'active'
-            AND g.expires_at > NOW()
+            AND g.expires_at > (NOW() AT TIME ZONE 'UTC')
             ORDER BY m.id DESC
         """, (player_id, player_id))
         
@@ -1408,7 +1408,7 @@ def active_match():
             JOIN profiles p2 ON m.player2_id = p2.player_id
             WHERE (m.player1_id = %s OR m.player2_id = %s)
             AND g.status = 'active'
-            AND g.expires_at > NOW()
+            AND g.expires_at > (NOW() AT TIME ZONE 'UTC')
             ORDER BY m.id DESC
             LIMIT 1
         """, (player_id, player_id))
@@ -1554,7 +1554,7 @@ def create_game():
         
         cursor.execute("""
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at, expires_at)
-            VALUES (%s, %s, %s, %s, %s, 'active', NOW(), %s)
+            VALUES (%s, %s, %s, %s, %s, 'active', (NOW() AT TIME ZONE 'UTC'), %s)
             RETURNING id
         """, (data['match_id'], player1_id, player2_id, topic_id, chat_link, expires_at))
         
