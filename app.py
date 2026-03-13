@@ -961,8 +961,8 @@ def check_match():
                         "match_found": True,
                         "match_id": existing_match['id'],
                         "opponent": opponent,
-                        "expires_at": existing_match['expires_at'].isoformat() + "Z",  # ← ДОБАВЛЕНО + "Z"
-                        "server_time": datetime.utcnow().isoformat() + "Z"             # ← ДОБАВЛЕНО + "Z"
+                        "expires_at": existing_match['expires_at'].isoformat() + "Z",
+                        "server_time": datetime.utcnow().isoformat() + "Z"
                     })
         
         # === ШАГ 1: Получаем данные текущего игрока из очереди ===
@@ -1093,8 +1093,8 @@ def check_match():
             "match_found": True,
             "match_id": match_id,
             "opponent": opponent,
-            "expires_at": expires_at.isoformat() + "Z",  # ← ДОБАВЛЕНО + "Z"
-            "server_time": now.isoformat() + "Z"         # ← ДОБАВЛЕНО + "Z"
+            "expires_at": expires_at.isoformat() + "Z",
+            "server_time": now.isoformat() + "Z"
         })
     
     except Exception as e:
@@ -1434,7 +1434,7 @@ def active_match():
             conn.close()
 
 # ============================================
-# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ
+# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ - ИСПРАВЛЕН
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1462,11 +1462,12 @@ def create_game():
         
         existing_game = cursor.fetchone()
         if existing_game:
-            logger.info(f"Игра для match_id={data['match_id']} уже существует")
+            logger.info(f"Игра для match_id={data['match_id']} уже существует, возвращаем существующую")
             return jsonify({
                 "status": "ok",
                 "game_id": existing_game[0],
-                "chat_link": existing_game[1]
+                "chat_link": existing_game[1],
+                "already_exists": True  # ← ДОБАВЛЕН ФЛАГ
             })
         
         # Получаем данные матча
@@ -1611,7 +1612,7 @@ if __name__ == '__main__':
     print("   - Красивые названия: #ID | ник1 & ник2")
     print("   - Приветствие в теме")
     print("   - Возврат chat_link для фронта")
-    print("   - Защита от дублей (проверка existing_game)")
+    print("   - Защита от дублей (проверка existing_game + флаг already_exists)")
     print("   - Фоновый поток для очистки очереди поиска (каждые 5 секунд)")
     print(f"📌 ID форум-группы: {FORUM_GROUP_ID}")
     print(f"📌 ID темы с правилами: {RULES_TOPIC_ID}")
