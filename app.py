@@ -7,6 +7,8 @@ import random
 import logging
 import requests
 
+BUILD_VERSION = int(time.time())
+
 sys.path.append('/app/.local/lib/python3.14/site-packages')
 sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
@@ -265,7 +267,12 @@ def background_worker():
 # ============================================
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({"message": "Pingster backend is running!", "status": "ok"})
+    # Проверяем, хочет ли браузер HTML или JSON
+    if request.headers.get('Accept') == 'application/json':
+        return jsonify({"message": "Pingster backend is running!", "status": "ok"})
+    
+    # Для браузера отдаём HTML с версией
+    return render_template('index.html', build_version=BUILD_VERSION)
 
 @app.route('/api', methods=['GET'])
 def api_root():
