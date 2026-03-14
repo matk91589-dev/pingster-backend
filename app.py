@@ -308,6 +308,71 @@ def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
 # ============================================
+# НОВЫЙ ЭНДПОИНТ ДЛЯ ИНИЦИАЛИЗАЦИИ ПОЛЬЗОВАТЕЛЯ
+# ============================================
+@app.route('/api/user/init', methods=['POST'])
+def user_init():
+    logger.info("POST /api/user/init")
+    
+    if not request.json or 'telegram_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
+    data = request.json
+    telegram_id = data['telegram_id']
+    username = data.get('username', '')
+    
+    conn = None
+    cursor = None
+    
+    try:
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        cursor = conn.cursor()
+        
+        # Проверяем, есть ли пользователь
+        cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+        existing = cursor.fetchone()
+        
+        if existing:
+            player_id = existing[0]
+            logger.info(f"Пользователь {telegram_id} уже существует, player_id={player_id}")
+        else:
+            # Создаём нового пользователя
+            player_id = generate_player_id()
+            nick = username if username else generate_random_nick()
+            
+            cursor.execute("""
+                INSERT INTO users (telegram_id, player_id, created_at)
+                VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
+            """, (telegram_id, player_id))
+            
+            cursor.execute("""
+                INSERT INTO profiles (player_id, nick, created_at)
+                VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
+            """, (player_id, nick))
+            
+            logger.info(f"Создан новый пользователь: {telegram_id} -> {player_id} (ник: {nick})")
+        
+        conn.commit()
+        
+        return jsonify({
+            "status": "ok",
+            "player_id": player_id
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в user_init: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================
 # ПОИСК И МЭТЧМЕЙКИНГ
 # ============================================
 @app.route('/api/search/start', methods=['POST'])
