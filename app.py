@@ -1,3 +1,4 @@
+print('пошел нахуй')
 import sys
 import os
 import threading
