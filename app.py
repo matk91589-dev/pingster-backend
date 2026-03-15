@@ -16,7 +16,7 @@ sys.path.append('/app/.local/lib/python3.14/site-packages')
 sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import psycopg2
 import psycopg2.extras
 
@@ -28,7 +28,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)
+
+# Настройка CORS для всех доменов (для разработки)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Конфигурация из переменных окружения
 DB_HOST = os.getenv("DB_HOST", "85.239.33.182")
@@ -404,10 +406,162 @@ def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
 # ============================================
-# НОВЫЙ ЭНДПОИНТ ДЛЯ ИНИЦИАЛИЗАЦИИ ПОЛЬЗОВАТЕЛЯ
+# ЭНДПОИНТЫ ДЛЯ ПРОФИЛЯ
 # ============================================
-@app.route('/api/user/init', methods=['POST'])
+@app.route('/api/profile/get', methods=['POST', 'OPTIONS'])
+def get_profile():
+    """Получить данные профиля пользователя"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/profile/get")
+    
+    if not request.json or 'telegram_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        player_id = get_player_id(telegram_id)
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        
+        # Получаем данные из таблицы profiles
+        cursor.execute("""
+            SELECT nick, age, steam_link, faceit_link, created_at
+            FROM profiles 
+            WHERE player_id = %s
+        """, (player_id,))
+        
+        profile = cursor.fetchone()
+        
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        
+        logger.info(f"✅ Профиль загружен для player_id={player_id}")
+        
+        return jsonify({
+            "status": "ok",
+            "nick": profile['nick'],
+            "age": profile['age'],
+            "steam_link": profile['steam_link'],
+            "faceit_link": profile['faceit_link'],
+            "created_at": profile['created_at'].isoformat() if profile['created_at'] else None
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в get_profile: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@app.route('/api/profile/update', methods=['POST', 'OPTIONS'])
+def update_profile():
+    """Обновить данные профиля пользователя"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/profile/update")
+    
+    if not request.json or 'telegram_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
+    data = request.json
+    telegram_id = data['telegram_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        player_id = get_player_id(telegram_id)
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Собираем поля для обновления
+        update_fields = []
+        update_values = []
+        
+        if 'nick' in data and data['nick']:
+            update_fields.append("nick = %s")
+            update_values.append(data['nick'])
+        
+        if 'age' in data:
+            update_fields.append("age = %s")
+            update_values.append(data['age'] if data['age'] else None)
+        
+        if 'steam_link' in data:
+            update_fields.append("steam_link = %s")
+            update_values.append(data['steam_link'] if data['steam_link'] else None)
+        
+        if 'faceit_link' in data:
+            update_fields.append("faceit_link = %s")
+            update_values.append(data['faceit_link'] if data['faceit_link'] else None)
+        
+        if not update_fields:
+            return jsonify({"error": "No fields to update"}), 400
+        
+        # Добавляем player_id в конец списка значений
+        update_values.append(player_id)
+        
+        query = f"""
+            UPDATE profiles 
+            SET {', '.join(update_fields)}
+            WHERE player_id = %s
+            RETURNING nick, age, steam_link, faceit_link
+        """
+        
+        cursor.execute(query, update_values)
+        updated = cursor.fetchone()
+        
+        conn.commit()
+        
+        logger.info(f"✅ Профиль обновлен для player_id={player_id}")
+        
+        return jsonify({
+            "status": "ok",
+            "nick": updated[0] if updated else None,
+            "age": updated[1] if updated else None,
+            "steam_link": updated[2] if updated else None,
+            "faceit_link": updated[3] if updated else None
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в update_profile: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================
+# ЭНДПОИНТ ДЛЯ ИНИЦИАЛИЗАЦИИ ПОЛЬЗОВАТЕЛЯ
+# ============================================
+@app.route('/api/user/init', methods=['POST', 'OPTIONS'])
 def user_init():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/user/init")
     
     if not request.json or 'telegram_id' not in request.json:
@@ -471,8 +625,11 @@ def user_init():
 # ============================================
 # ПОИСК И МЭТЧМЕЙКИНГ
 # ============================================
-@app.route('/api/search/start', methods=['POST'])
+@app.route('/api/search/start', methods=['POST', 'OPTIONS'])
 def start_search():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/search/start")
     
     if not request.json or 'telegram_id' not in request.json:
@@ -560,8 +717,11 @@ def start_search():
         if conn:
             conn.close()
 
-@app.route('/api/match/check', methods=['POST'])
+@app.route('/api/match/check', methods=['POST', 'OPTIONS'])
 def check_match():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/match/check")
     
     if not request.json or 'telegram_id' not in request.json:
@@ -748,8 +908,11 @@ def check_match():
         if conn:
             conn.close()
 
-@app.route('/api/match/status/<int:match_id>', methods=['GET'])
+@app.route('/api/match/status/<int:match_id>', methods=['GET', 'OPTIONS'])
 def match_status(match_id):
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info(f"GET /api/match/status/{match_id}")
     
     conn = None
@@ -792,8 +955,11 @@ def match_status(match_id):
         if conn:
             conn.close()
 
-@app.route('/api/match/respond', methods=['POST'])
+@app.route('/api/match/respond', methods=['POST', 'OPTIONS'])
 def respond_match():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/match/respond")
     
     if not request.json or 'telegram_id' not in request.json or 'match_id' not in request.json or 'response' not in request.json:
@@ -893,8 +1059,11 @@ def respond_match():
         if conn:
             conn.close()
 
-@app.route('/api/search/stop', methods=['POST'])
+@app.route('/api/search/stop', methods=['POST', 'OPTIONS'])
 def stop_search():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/search/stop")
     
     if not request.json or 'telegram_id' not in request.json:
@@ -936,8 +1105,11 @@ def stop_search():
 # ============================================
 # ЭНДПОИНТЫ ДЛЯ ИСТОРИИ МАТЧЕЙ
 # ============================================
-@app.route('/api/my-matches', methods=['POST'])
+@app.route('/api/my-matches', methods=['POST', 'OPTIONS'])
 def my_matches():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/my-matches")
     
     if not request.json or 'telegram_id' not in request.json:
@@ -1004,8 +1176,11 @@ def my_matches():
         if conn:
             conn.close()
 
-@app.route('/api/active-match', methods=['POST'])
+@app.route('/api/active-match', methods=['POST', 'OPTIONS'])
 def active_match():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/active-match")
     
     if not request.json or 'telegram_id' not in request.json:
@@ -1063,8 +1238,11 @@ def active_match():
 # ============================================
 # ЭНДПОИНТ СОЗДАНИЯ ИГРЫ (С ЗАЩИЩЕННЫМИ ССЫЛКАМИ)
 # ============================================
-@app.route('/api/game/create', methods=['POST'])
+@app.route('/api/game/create', methods=['POST', 'OPTIONS'])
 def create_game():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/game/create")
     
     if not request.json or 'match_id' not in request.json:
@@ -1275,7 +1453,7 @@ def create_game():
         return jsonify({
             "status": "ok",
             "game_id": game_id,
-            "chat_link": public_link,  # Возвращаем публичную ссылку для админки
+            "chat_link": public_link,
             "has_secure_links": True
         })
     
@@ -1291,11 +1469,14 @@ def create_game():
             conn.close()
 
 # ============================================
-# ЭНДПОИНТ ДЛЯ ПРОВЕРКИ ТОКЕНА (ЕСЛИ НУЖНО)
+# ЭНДПОИНТ ДЛЯ ПРОВЕРКИ ТОКЕНА
 # ============================================
-@app.route('/api/verify-token', methods=['POST'])
+@app.route('/api/verify-token', methods=['POST', 'OPTIONS'])
 def verify_token():
     """Проверяет валидность токена (может вызывать бот)"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     logger.info("POST /api/verify-token")
     
     if not request.json or 'token' not in request.json or 'user_id' not in request.json:
@@ -1308,7 +1489,6 @@ def verify_token():
     match_id, token_user_id = verify_match_token(token)
     
     if match_id and token_user_id == user_id:
-        # Токен валиден и принадлежит этому пользователю
         return jsonify({
             "valid": True,
             "match_id": match_id
@@ -1328,6 +1508,7 @@ if __name__ == '__main__':
     print("✅ Форум теперь публичный — любой может зайти и смотреть")
     print("✅ У игроков персональные защищённые ссылки (подделать нельзя)")
     print("✅ Проверка по HMAC-SHA256 + время жизни")
+    print("✅ Эндпоинты для профиля (/api/profile/get и /api/profile/update)")
     print(f"\n🚀 Сервер будет запущен на порту {port}")
     
     # Запускаем фоновые потоки
