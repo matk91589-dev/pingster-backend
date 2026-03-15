@@ -435,9 +435,9 @@ def get_profile():
         
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         
-        # Получаем данные из таблицы profiles
+        # Получаем данные из таблицы profiles (ВКЛЮЧАЯ АВАТАРКУ)
         cursor.execute("""
-            SELECT nick, age, steam_link, faceit_link, created_at
+            SELECT nick, age, steam_link, faceit_link, avatar, created_at
             FROM profiles 
             WHERE player_id = %s
         """, (player_id,))
@@ -455,6 +455,7 @@ def get_profile():
             "age": profile['age'],
             "steam_link": profile['steam_link'],
             "faceit_link": profile['faceit_link'],
+            "avatar": profile['avatar'],  # 👈 ДОБАВЛЕНА АВАТАРКА
             "created_at": profile['created_at'].isoformat() if profile['created_at'] else None
         })
         
@@ -515,6 +516,11 @@ def update_profile():
             update_fields.append("faceit_link = %s")
             update_values.append(data['faceit_link'] if data['faceit_link'] else None)
         
+        # 👇 ДОБАВЛЕНО ОБНОВЛЕНИЕ АВАТАРКИ
+        if 'avatar' in data:
+            update_fields.append("avatar = %s")
+            update_values.append(data['avatar'] if data['avatar'] else None)
+        
         if not update_fields:
             return jsonify({"error": "No fields to update"}), 400
         
@@ -525,7 +531,7 @@ def update_profile():
             UPDATE profiles 
             SET {', '.join(update_fields)}
             WHERE player_id = %s
-            RETURNING nick, age, steam_link, faceit_link
+            RETURNING nick, age, steam_link, faceit_link, avatar
         """
         
         cursor.execute(query, update_values)
@@ -540,13 +546,121 @@ def update_profile():
             "nick": updated[0] if updated else None,
             "age": updated[1] if updated else None,
             "steam_link": updated[2] if updated else None,
-            "faceit_link": updated[3] if updated else None
+            "faceit_link": updated[3] if updated else None,
+            "avatar": updated[4] if updated else None  # 👈 ВОЗВРАЩАЕМ АВАТАРКУ
         })
         
     except Exception as e:
         logger.error(f"ОШИБКА в update_profile: {e}", exc_info=True)
         if conn:
             conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================
+# ЭНДПОИНТЫ ДЛЯ АВАТАРКИ (НОВЫЕ)
+# ============================================
+@app.route('/api/profile/avatar/update', methods=['POST', 'OPTIONS'])
+def update_avatar():
+    """Обновить ссылку на аватарку пользователя"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/profile/avatar/update")
+    
+    if not request.json or 'telegram_id' not in request.json or 'avatar_url' not in request.json:
+        return jsonify({"error": "Missing telegram_id or avatar_url"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    avatar_url = request.json['avatar_url']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        player_id = get_player_id(telegram_id)
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Обновляем аватарку в profiles
+        cursor.execute("""
+            UPDATE profiles 
+            SET avatar = %s
+            WHERE player_id = %s
+            RETURNING avatar
+        """, (avatar_url, player_id))
+        
+        updated = cursor.fetchone()
+        conn.commit()
+        
+        logger.info(f"✅ Аватарка обновлена для player_id={player_id}")
+        
+        return jsonify({
+            "status": "ok",
+            "avatar_url": updated[0] if updated else None
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в update_avatar: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@app.route('/api/profile/avatar/get', methods=['POST', 'OPTIONS'])
+def get_avatar():
+    """Получить ссылку на аватарку пользователя"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/profile/avatar/get")
+    
+    if not request.json or 'telegram_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        player_id = get_player_id(telegram_id)
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT avatar FROM profiles WHERE player_id = %s
+        """, (player_id,))
+        
+        result = cursor.fetchone()
+        
+        return jsonify({
+            "status": "ok",
+            "avatar_url": result[0] if result else None
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в get_avatar: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
     finally:
         if cursor:
@@ -598,9 +712,9 @@ def user_init():
             """, (telegram_id, player_id))
             
             cursor.execute("""
-                INSERT INTO profiles (player_id, nick, created_at)
-                VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
-            """, (player_id, nick))
+                INSERT INTO profiles (player_id, nick, avatar, created_at)
+                VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
+            """, (player_id, nick, None))  # 👇 АВАТАРКА ПО УМОЛЧАНИЮ NULL
             
             logger.info(f"Создан новый пользователь: {telegram_id} -> {player_id} (ник: {nick})")
         
@@ -762,7 +876,7 @@ def check_match():
                 other_id = existing_match['player2_id'] if existing_match['player1_id'] == player_id else existing_match['player1_id']
                 
                 cursor.execute("""
-                    SELECT nick, age, steam_link, faceit_link
+                    SELECT nick, age, steam_link, faceit_link, avatar
                     FROM profiles WHERE player_id = %s
                 """, (other_id,))
                 
@@ -777,6 +891,7 @@ def check_match():
                         "rating": "0",
                         "steam_link": profile['steam_link'] or "Не указана",
                         "faceit_link": profile['faceit_link'] or "Не указана",
+                        "avatar": profile['avatar'],  # 👈 ДОБАВЛЕНА АВАТАРКА
                         "comment": "Нет комментария"
                     }
                     
@@ -815,7 +930,8 @@ def check_match():
                 sq.*,
                 p.nick,
                 p.steam_link,
-                p.faceit_link
+                p.faceit_link,
+                p.avatar
             FROM search_queue sq
             JOIN profiles p ON sq.player_id = p.player_id
             WHERE sq.mode = %s 
@@ -886,6 +1002,7 @@ def check_match():
             "rating": best_candidate['rank'],
             "steam_link": best_candidate['steam_link'] or "Не указана",
             "faceit_link": best_candidate['faceit_link'] or "Не указана",
+            "avatar": best_candidate['avatar'],  # 👈 ДОБАВЛЕНА АВАТАРКА
             "comment": best_candidate['comment'] or "Нет комментария"
         }
         
@@ -1509,6 +1626,7 @@ if __name__ == '__main__':
     print("✅ У игроков персональные защищённые ссылки (подделать нельзя)")
     print("✅ Проверка по HMAC-SHA256 + время жизни")
     print("✅ Эндпоинты для профиля (/api/profile/get и /api/profile/update)")
+    print("✅ Эндпоинты для аватарок (/api/profile/avatar/*)")
     print(f"\n🚀 Сервер будет запущен на порту {port}")
     
     # Запускаем фоновые потоки
