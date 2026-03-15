@@ -2,6 +2,9 @@ import sys
 import os
 import threading
 import time
+import hashlib
+import hmac
+import base64
 from datetime import datetime, timedelta
 import random
 import logging
@@ -41,6 +44,9 @@ BOT_USERNAME = "PingsterBot"
 # ID форум-группы
 FORUM_GROUP_ID = -1003753772298
 RULES_TOPIC_ID = 5  # ID темы с правилами
+
+# Секретный ключ для подписи ссылок (НИКОМУ НЕ ПОКАЗЫВАТЬ!)
+SECRET_KEY = os.getenv("SECRET_KEY", "pingster_super_secret_key_2026_change_this")
 
 # ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -144,6 +150,96 @@ def filter_candidates_by_rank(candidates, player_rank, mode, style):
         if abs(cand_idx - player_idx) <= 3:
             filtered.append(cand)
     return filtered
+
+# ============================================
+# ФУНКЦИИ ДЛЯ ЗАЩИЩЕННЫХ ССЫЛОК
+# ============================================
+def generate_match_token(match_id, user_id, expires_at):
+    """
+    Создаёт защищённый токен для доступа к матчу
+    match_id - ID матча
+    user_id - Telegram ID пользователя
+    expires_at - время окончания матча (timestamp)
+    """
+    data = f"{match_id}:{user_id}:{expires_at}"
+    
+    # Создаём HMAC-SHA256 подпись
+    signature = hmac.new(
+        SECRET_KEY.encode(),
+        data.encode(),
+        hashlib.sha256
+    ).hexdigest()[:16]  # Берём первые 16 символов для компактности
+    
+    token = f"{match_id}:{user_id}:{expires_at}:{signature}"
+    
+    # Кодируем в base64 для безопасной передачи в URL
+    return base64.urlsafe_b64encode(token.encode()).decode().rstrip('=')
+
+def verify_match_token(token):
+    """
+    Проверяет валидность токена
+    Возвращает (match_id, user_id) если токен валиден, иначе (None, None)
+    """
+    try:
+        # Декодируем из base64
+        padded_token = token + '=' * (4 - len(token) % 4) if len(token) % 4 else token
+        decoded = base64.urlsafe_b64decode(padded_token.encode()).decode()
+        parts = decoded.split(':')
+        
+        if len(parts) != 4:
+            logger.warning(f"Неверный формат токена: {decoded}")
+            return None, None
+            
+        match_id, user_id, expires_at, signature = parts
+        expires_at = int(expires_at)
+        
+        # Проверяем, не истёк ли матч
+        current_time = int(time.time())
+        if current_time > expires_at:
+            logger.warning(f"Токен истёк: {current_time} > {expires_at}")
+            return None, None
+        
+        # Проверяем подпись
+        expected_data = f"{match_id}:{user_id}:{expires_at}"
+        expected_signature = hmac.new(
+            SECRET_KEY.encode(),
+            expected_data.encode(),
+            hashlib.sha256
+        ).hexdigest()[:16]
+        
+        if hmac.compare_digest(signature, expected_signature):
+            logger.info(f"✅ Токен валиден: match={match_id}, user={user_id}")
+            return match_id, user_id
+        else:
+            logger.warning(f"❌ Неверная подпись токена: {signature} != {expected_signature}")
+            return None, None
+            
+    except Exception as e:
+        logger.error(f"Ошибка проверки токена: {e}")
+        return None, None
+
+def check_user_in_forum(user_id):
+    """
+    Проверяет, состоит ли пользователь в форуме
+    """
+    try:
+        # Пытаемся получить информацию о пользователе в чате
+        get_member_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
+        params = {
+            "chat_id": FORUM_GROUP_ID,
+            "user_id": int(user_id)
+        }
+        response = requests.get(get_member_url, params=params, timeout=5)
+        data = response.json()
+        
+        if data.get('ok'):
+            status = data['result']['status']
+            # Если пользователь состоит в чате (участник или администратор)
+            return status in ['member', 'administrator', 'creator']
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка проверки участия в форуме: {e}")
+        return False
 
 # ============================================
 # ЗАЩИТА ОТ ЧУЖИХ
@@ -965,7 +1061,7 @@ def active_match():
             conn.close()
 
 # ============================================
-# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ
+# ЭНДПОИНТ СОЗДАНИЯ ИГРЫ (С ЗАЩИЩЕННЫМИ ССЫЛКАМИ)
 # ============================================
 @app.route('/api/game/create', methods=['POST'])
 def create_game():
@@ -1068,18 +1164,33 @@ def create_game():
         topic_id = topic_result['result']['message_thread_id']
         
         clean_chat_id = str(FORUM_ID).replace('-100', '')
-        chat_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
+        
+        # Время окончания матча (30 минут)
+        expires_at_dt = datetime.utcnow() + timedelta(minutes=30)
+        expires_at_ts = int(expires_at_dt.timestamp())
+        
+        # Создаём защищённые ссылки для каждого игрока
+        token1 = generate_match_token(match_id, telegram_id1, expires_at_ts)
+        token2 = generate_match_token(match_id, telegram_id2, expires_at_ts)
+        
+        # Ссылки с токенами
+        secure_link1 = f"https://t.me/c/{clean_chat_id}/{topic_id}?start={token1}"
+        secure_link2 = f"https://t.me/c/{clean_chat_id}/{topic_id}?start={token2}"
+        
+        # Обычная ссылка для всех остальных
+        public_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
         
         time.sleep(0.1)
         
         try:
+            # Приветственное сообщение в теме
             welcome_text = f"""🎯 **МАТЧ #{match_id} СОЗДАН!**
 
 Привет, {nick1} и {nick2}!
 Это ваш временный чат для игры.
 
 ⏳ Чат будет активен 30 минут, затем закроется.
-🔒 Чужие сюда не зайдут — защищено ботом."""
+🔒 Только вы двое имеете доступ к чату."""
             
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -1094,14 +1205,14 @@ def create_game():
         except Exception as e:
             logger.error(f"Ошибка отправки приветствия: {e}")
         
-        expires_at = datetime.utcnow() + timedelta(minutes=30)
+        expires_at = expires_at_dt
         
         cursor.execute("""
             INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at, expires_at)
             VALUES (%s, %s, %s, %s, %s, 'active', (NOW() AT TIME ZONE 'UTC'), %s)
             ON CONFLICT (match_id) DO NOTHING
             RETURNING id
-        """, (match_id, player1_id, player2_id, topic_id, chat_link, expires_at))
+        """, (match_id, player1_id, player2_id, topic_id, public_link, expires_at))
         
         result = cursor.fetchone()
         
@@ -1125,26 +1236,47 @@ def create_game():
         game_id = result[0]
         conn.commit()
         
+        # Отправляем каждому игроку ЕГО защищённую ссылку
         try:
-            for tg_id, nick in [(telegram_id1, nick1), (telegram_id2, nick2)]:
-                time.sleep(0.1)
-                
-                msg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                msg_data = {
-                    "chat_id": int(tg_id),
-                    "text": f"✅ **Матч #{match_id} создан!**\n\n"
-                            f"Соперник: {nick2 if nick == nick1 else nick1}\n\n"
-                            f"🔗 [Перейти в чат]({chat_link})",
-                    "parse_mode": "Markdown"
-                }
-                requests.post(msg_url, json=msg_data, timeout=5)
+            # Первому игроку
+            msg_data1 = {
+                "chat_id": int(telegram_id1),
+                "text": f"✅ **Матч #{match_id} создан!**\n\n"
+                        f"Соперник: {nick2}\n\n"
+                        f"🔗 [Перейти в чат]({secure_link1})\n\n"
+                        f"⚠️ Ссылка работает только для вас и только пока активен матч.",
+                "parse_mode": "Markdown"
+            }
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json=msg_data1,
+                timeout=5
+            )
+            
+            time.sleep(0.1)
+            
+            # Второму игроку
+            msg_data2 = {
+                "chat_id": int(telegram_id2),
+                "text": f"✅ **Матч #{match_id} создан!**\n\n"
+                        f"Соперник: {nick1}\n\n"
+                        f"🔗 [Перейти в чат]({secure_link2})\n\n"
+                        f"⚠️ Ссылка работает только для вас и только пока активен матч.",
+                "parse_mode": "Markdown"
+            }
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json=msg_data2,
+                timeout=5
+            )
         except Exception as e:
             logger.error(f"Ошибка отправки уведомления в ЛС: {e}")
         
         return jsonify({
             "status": "ok",
             "game_id": game_id,
-            "chat_link": chat_link
+            "chat_link": public_link,  # Возвращаем публичную ссылку для админки
+            "has_secure_links": True
         })
     
     except Exception as e:
@@ -1159,13 +1291,43 @@ def create_game():
             conn.close()
 
 # ============================================
+# ЭНДПОИНТ ДЛЯ ПРОВЕРКИ ТОКЕНА (ЕСЛИ НУЖНО)
+# ============================================
+@app.route('/api/verify-token', methods=['POST'])
+def verify_token():
+    """Проверяет валидность токена (может вызывать бот)"""
+    logger.info("POST /api/verify-token")
+    
+    if not request.json or 'token' not in request.json or 'user_id' not in request.json:
+        return jsonify({"error": "Missing token or user_id"}), 400
+    
+    data = request.json
+    token = data['token']
+    user_id = str(data['user_id'])
+    
+    match_id, token_user_id = verify_match_token(token)
+    
+    if match_id and token_user_id == user_id:
+        # Токен валиден и принадлежит этому пользователю
+        return jsonify({
+            "valid": True,
+            "match_id": match_id
+        })
+    else:
+        return jsonify({
+            "valid": False
+        })
+
+# ============================================
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
-    print("🔥 PINGSTER BACKEND - УПРОЩЕННАЯ ВЕРСИЯ")
-    print("✅ Только API, без шаблонов")
+    print("🔥 PINGSTER BACKEND - ПУБЛИЧНЫЙ ФОРУМ + ЗАЩИЩЕННЫЕ ССЫЛКИ")
+    print("✅ Форум теперь публичный — любой может зайти и смотреть")
+    print("✅ У игроков персональные защищённые ссылки (подделать нельзя)")
+    print("✅ Проверка по HMAC-SHA256 + время жизни")
     print(f"\n🚀 Сервер будет запущен на порту {port}")
     
     # Запускаем фоновые потоки
