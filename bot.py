@@ -83,20 +83,30 @@ def send_main_menu(user_id, player_id=None):
     )
 
 def send_forum_invite(user_id):
-    """Отправляет приглашение вступить в форум"""
-    markup = InlineKeyboardMarkup()
-    forum_button = InlineKeyboardButton(
-        text="📢 Вступить в форум Pingster",
+    """Отправляет приглашение вступить в форум с кнопкой подтверждения"""
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    # Кнопка вступления в форум
+    forum_btn = InlineKeyboardButton(
+        text="📢 1. Вступить в форум Pingster",
         url=FORUM_LINK
     )
-    markup.add(forum_button)
+    
+    # Кнопка проверки (Я вступил)
+    check_btn = InlineKeyboardButton(
+        text="✅ 2. Я вступил, продолжить",
+        callback_data="check_forum"
+    )
+    
+    markup.add(forum_btn, check_btn)
     
     msg = bot.send_message(
         user_id,
         "🎮 **Добро пожаловать в Pingster!**\n\n"
-        "Для начала пользования нужно вступить в наш форум.\n"
-        "Это займёт 1 секунду 🔥\n\n"
-        "После вступления я сразу покажу главное меню!",
+        "Для начала пользования нужно вступить в наш форум.\n\n"
+        "**1️⃣ Нажми кнопку «Вступить в форум»**\n"
+        "**2️⃣ Нажми «Я вступил, продолжить»**\n\n"
+        "После этого откроется главное меню 🔥",
         parse_mode='Markdown',
         reply_markup=markup
     )
@@ -194,71 +204,28 @@ def check(message):
         bot.reply_to(message, f"❌ Ошибка подключения: {str(e)}")
 
 # ============================================
-# ОБРАБОТЧИК ВСТУПЛЕНИЯ В ФОРУМ
+# ОБРАБОТЧИК НАЖАТИЯ КНОПОК
 # ============================================
-@bot.chat_member_handler()
-def handle_chat_member_update(update):
-    """Срабатывает при изменении статуса участника в чате"""
-    try:
-        new_status = update.new_chat_member.status
-        user_id = update.from_user.id
-        chat_id = update.chat.id
-        
-        print(f"📢 Обновление статуса в чате {chat_id}: юзер {user_id} -> {new_status}")
-        
-        # Проверяем, что это наш форум
-        if str(chat_id) != f"@{FORUM_USERNAME}" and str(chat_id) != str(FORUM_USERNAME):
-            return
-        
-        # Если пользователь стал участником
-        if new_status in ['member', 'administrator', 'creator']:
-            print(f"✅ Юзер {user_id} вступил в форум!")
-            
-            # Удаляем временное сообщение-приглашение
-            delete_temp_message(user_id)
-            
-            # Отправляем главное меню
-            # Получаем player_id через API
-            try:
-                response = requests.post(f'{API_URL}/user/init', json={
-                    'telegram_id': user_id,
-                    'username': 'from_forum'
-                }, timeout=10)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    send_main_menu(user_id, data.get('player_id'))
-                else:
-                    send_main_menu(user_id)
-            except:
-                send_main_menu(user_id)
-                
-    except Exception as e:
-        print(f"❌ Ошибка в handle_chat_member_update: {e}")
 
-# Альтернативный обработчик (если chat_member_handler не работает)
-@bot.chat_join_request_handler()
-def handle_join_request(request):
-    """Срабатывает при запросе на вступление"""
-    try:
-        user_id = request.from_user.id
-        chat_id = request.chat.id
-        
-        print(f"📢 Запрос на вступление от {user_id} в чат {chat_id}")
-        
-        # Принимаем заявку
-        requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/approveChatJoinRequest",
-            json={
-                "chat_id": chat_id,
-                "user_id": user_id
-            }
-        )
-        
-        print(f"✅ Заявка {user_id} принята!")
-        
+@bot.callback_query_handler(func=lambda call: call.data == "check_forum")
+def check_forum_callback(call):
+    """Обрабатывает нажатие кнопки 'Я вступил, продолжить'"""
+    user_id = call.from_user.id
+    
+    # Проверяем, вступил ли пользователь в форум
+    if is_user_in_forum(user_id):
         # Удаляем временное сообщение
         delete_temp_message(user_id)
+        
+        # Убираем кнопки (редактируем сообщение)
+        try:
+            bot.edit_message_text(
+                "✅ Отлично! Ты в форуме. Загружаем главное меню...",
+                user_id,
+                call.message.message_id
+            )
+        except:
+            pass
         
         # Отправляем главное меню
         try:
@@ -272,11 +239,16 @@ def handle_join_request(request):
                 send_main_menu(user_id, data.get('player_id'))
             else:
                 send_main_menu(user_id)
-        except:
+        except Exception as e:
+            print(f"❌ Ошибка при отправке главного меню: {e}")
             send_main_menu(user_id)
-            
-    except Exception as e:
-        print(f"❌ Ошибка в handle_join_request: {e}")
+    else:
+        # Если не вступил — показываем предупреждение
+        bot.answer_callback_query(
+            call.id,
+            "❌ Ты ещё не в форуме! Сначала нажми кнопку «Вступить» ☝️",
+            show_alert=True
+        )
 
 # ============================================
 # ЗАПУСК БОТА
@@ -285,7 +257,7 @@ if __name__ == '__main__':
     print("🤖 Pingster бот запущен...")
     print(f"📡 API URL: {API_URL}")
     print(f"📢 Форум: @{FORUM_USERNAME}")
-    print("✅ Режим: с проверкой форума")
+    print("✅ Режим: с проверкой форума и кнопкой подтверждения")
     
     # Удаляем вебхук (на всякий случай)
     bot.remove_webhook()
