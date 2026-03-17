@@ -1616,6 +1616,243 @@ def verify_token():
         })
 
 # ============================================
+# ЭНДПОИНТЫ ДЛЯ ПОИСКА ИГРОКОВ (ДОБАВИТЬ В КОНЕЦ)
+# ============================================
+
+@app.route('/api/users/all', methods=['POST', 'OPTIONS'])
+def get_all_users():
+    """Получить всех пользователей (кроме текущего)"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/users/all")
+    
+    if not request.json or 'telegram_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        current_player_id = get_player_id(telegram_id)
+        if not current_player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        
+        # Получаем всех пользователей кроме текущего
+        cursor.execute("""
+            SELECT 
+                u.player_id,
+                p.nick,
+                p.avatar,
+                p.age,
+                p.steam_link,
+                p.faceit_link,
+                p.created_at
+            FROM users u
+            JOIN profiles p ON u.player_id = p.player_id
+            WHERE u.player_id != %s
+            ORDER BY p.created_at DESC
+            LIMIT 100
+        """, (current_player_id,))
+        
+        users = cursor.fetchall()
+        
+        result = []
+        for user in users:
+            result.append({
+                "player_id": user['player_id'],
+                "nick": user['nick'],
+                "avatar": user['avatar'],
+                "age": user['age'],
+                "steam_link": user['steam_link'],
+                "faceit_link": user['faceit_link']
+            })
+        
+        logger.info(f"✅ Загружено {len(result)} пользователей")
+        
+        return jsonify({
+            "status": "ok",
+            "users": result
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в get_all_users: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@app.route('/api/users/search', methods=['POST', 'OPTIONS'])
+def search_users():
+    """Поиск пользователей по нику или ID"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/users/search")
+    
+    if not request.json or 'telegram_id' not in request.json or 'query' not in request.json:
+        return jsonify({"error": "Missing telegram_id or query"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    query = request.json['query'].strip()
+    
+    if not query:
+        return jsonify({"error": "Empty query"}), 400
+    
+    conn = None
+    cursor = None
+    
+    try:
+        current_player_id = get_player_id(telegram_id)
+        if not current_player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        
+        # Поиск по нику или ID
+        cursor.execute("""
+            SELECT 
+                u.player_id,
+                p.nick,
+                p.avatar,
+                p.age,
+                p.steam_link,
+                p.faceit_link,
+                p.created_at
+            FROM users u
+            JOIN profiles p ON u.player_id = p.player_id
+            WHERE u.player_id != %s
+            AND (
+                p.nick ILIKE %s 
+                OR u.player_id::text ILIKE %s
+            )
+            ORDER BY 
+                CASE 
+                    WHEN p.nick ILIKE %s THEN 1
+                    WHEN u.player_id::text ILIKE %s THEN 2
+                    ELSE 3
+                END,
+                p.created_at DESC
+            LIMIT 50
+        """, (
+            current_player_id,
+            f'%{query}%',  # для поиска по нику
+            f'%{query}%',   # для поиска по ID
+            f'{query}%',    # для сортировки (начинается с query)
+            f'{query}%'     # для сортировки
+        ))
+        
+        users = cursor.fetchall()
+        
+        result = []
+        for user in users:
+            result.append({
+                "player_id": user['player_id'],
+                "nick": user['nick'],
+                "avatar": user['avatar'],
+                "age": user['age'],
+                "steam_link": user['steam_link'],
+                "faceit_link": user['faceit_link']
+            })
+        
+        logger.info(f"✅ Найдено {len(result)} пользователей по запросу '{query}'")
+        
+        return jsonify({
+            "status": "ok",
+            "users": result,
+            "query": query
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в search_users: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@app.route('/api/user/profile/<player_id>', methods=['POST', 'OPTIONS'])
+def get_user_profile(player_id):
+    """Получить профиль пользователя по player_id"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info(f"POST /api/user/profile/{player_id}")
+    
+    if not request.json or 'telegram_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        current_player_id = get_player_id(telegram_id)
+        if not current_player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        
+        # Получаем профиль пользователя
+        cursor.execute("""
+            SELECT 
+                p.nick,
+                p.age,
+                p.steam_link,
+                p.faceit_link,
+                p.avatar,
+                p.created_at
+            FROM profiles p
+            WHERE p.player_id = %s
+        """, (player_id,))
+        
+        profile = cursor.fetchone()
+        
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        
+        logger.info(f"✅ Профиль {player_id} загружен")
+        
+        return jsonify({
+            "status": "ok",
+            "player_id": player_id,
+            "nick": profile['nick'],
+            "age": profile['age'],
+            "steam_link": profile['steam_link'],
+            "faceit_link": profile['faceit_link'],
+            "avatar": profile['avatar']
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в get_user_profile: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================
 # ЗАПУСК
 # ============================================
 if __name__ == '__main__':
