@@ -455,7 +455,7 @@ def get_profile():
             "age": profile['age'],
             "steam_link": profile['steam_link'],
             "faceit_link": profile['faceit_link'],
-            "avatar": profile['avatar'],  # 👈 ДОБАВЛЕНА АВАТАРКА
+            "avatar": profile['avatar'],
             "created_at": profile['created_at'].isoformat() if profile['created_at'] else None
         })
         
@@ -516,7 +516,6 @@ def update_profile():
             update_fields.append("faceit_link = %s")
             update_values.append(data['faceit_link'] if data['faceit_link'] else None)
         
-        # 👇 ДОБАВЛЕНО ОБНОВЛЕНИЕ АВАТАРКИ
         if 'avatar' in data:
             update_fields.append("avatar = %s")
             update_values.append(data['avatar'] if data['avatar'] else None)
@@ -547,7 +546,7 @@ def update_profile():
             "age": updated[1] if updated else None,
             "steam_link": updated[2] if updated else None,
             "faceit_link": updated[3] if updated else None,
-            "avatar": updated[4] if updated else None  # 👈 ВОЗВРАЩАЕМ АВАТАРКУ
+            "avatar": updated[4] if updated else None
         })
         
     except Exception as e:
@@ -562,7 +561,7 @@ def update_profile():
             conn.close()
 
 # ============================================
-# ЭНДПОИНТЫ ДЛЯ АВАТАРКИ (НОВЫЕ)
+# ЭНДПОИНТЫ ДЛЯ АВАТАРКИ
 # ============================================
 @app.route('/api/profile/avatar/update', methods=['POST', 'OPTIONS'])
 def update_avatar():
@@ -714,7 +713,7 @@ def user_init():
             cursor.execute("""
                 INSERT INTO profiles (player_id, nick, avatar, created_at)
                 VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
-            """, (player_id, nick, None))  # 👇 АВАТАРКА ПО УМОЛЧАНИЮ NULL
+            """, (player_id, nick, None))
             
             logger.info(f"Создан новый пользователь: {telegram_id} -> {player_id} (ник: {nick})")
         
@@ -891,7 +890,7 @@ def check_match():
                         "rating": "0",
                         "steam_link": profile['steam_link'] or "Не указана",
                         "faceit_link": profile['faceit_link'] or "Не указана",
-                        "avatar": profile['avatar'],  # 👈 ДОБАВЛЕНА АВАТАРКА
+                        "avatar": profile['avatar'],
                         "comment": "Нет комментария"
                     }
                     
@@ -1002,7 +1001,7 @@ def check_match():
             "rating": best_candidate['rank'],
             "steam_link": best_candidate['steam_link'] or "Не указана",
             "faceit_link": best_candidate['faceit_link'] or "Не указана",
-            "avatar": best_candidate['avatar'],  # 👈 ДОБАВЛЕНА АВАТАРКА
+            "avatar": best_candidate['avatar'],
             "comment": best_candidate['comment'] or "Нет комментария"
         }
         
@@ -1210,6 +1209,219 @@ def stop_search():
     
     except Exception as e:
         logger.error(f"ОШИБКА: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+# ============================================
+# ЭНДПОИНТЫ ДЛЯ ДРУЗЕЙ
+# ============================================
+
+@app.route('/api/friends/add', methods=['POST', 'OPTIONS'])
+def add_friend():
+    """Добавить игрока в друзья после матча"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/friends/add")
+    
+    if not request.json or 'telegram_id' not in request.json or 'friend_player_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id or friend_player_id"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    friend_player_id = request.json['friend_player_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Получаем player_id текущего пользователя
+        cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        player_id = user[0]
+        
+        # Проверяем, не друзья ли уже
+        cursor.execute("""
+            SELECT id FROM friends 
+            WHERE (player1_id = %s AND player2_id = %s) 
+               OR (player1_id = %s AND player2_id = %s)
+        """, (player_id, friend_player_id, friend_player_id, player_id))
+        
+        if cursor.fetchone():
+            return jsonify({"status": "already_friends"})
+        
+        # Добавляем в друзья
+        cursor.execute("""
+            INSERT INTO friends (player1_id, player2_id, created_at)
+            VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
+        """, (player_id, friend_player_id))
+        
+        conn.commit()
+        
+        logger.info(f"✅ Пользователь {player_id} добавил в друзья {friend_player_id}")
+        
+        return jsonify({
+            "status": "ok",
+            "message": "Friend added successfully"
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в add_friend: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@app.route('/api/friends/list', methods=['POST', 'OPTIONS'])
+def friends_list():
+    """Получить список друзей пользователя"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/friends/list")
+    
+    if not request.json or 'telegram_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        
+        # Получаем player_id текущего пользователя
+        cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        player_id = user[0]
+        
+        # Получаем список друзей
+        cursor.execute("""
+            SELECT 
+                CASE 
+                    WHEN player1_id = %s THEN player2_id
+                    ELSE player1_id
+                END as friend_id,
+                p.nick,
+                p.avatar,
+                p.age,
+                p.steam_link,
+                p.faceit_link,
+                f.created_at
+            FROM friends f
+            JOIN profiles p ON (
+                (f.player1_id = %s AND f.player2_id = p.player_id) OR
+                (f.player2_id = %s AND f.player1_id = p.player_id)
+            )
+            ORDER BY f.created_at DESC
+        """, (player_id, player_id, player_id))
+        
+        friends = cursor.fetchall()
+        
+        result = []
+        for friend in friends:
+            result.append({
+                "player_id": friend['friend_id'],
+                "nick": friend['nick'],
+                "avatar": friend['avatar'],
+                "age": friend['age'],
+                "steam_link": friend['steam_link'],
+                "faceit_link": friend['faceit_link'],
+                "added_at": friend['created_at'].isoformat() if friend['created_at'] else None
+            })
+        
+        logger.info(f"✅ Загружено {len(result)} друзей для {player_id}")
+        
+        return jsonify({
+            "status": "ok",
+            "friends": result
+        })
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в friends_list: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@app.route('/api/friends/remove', methods=['POST', 'OPTIONS'])
+def remove_friend():
+    """Удалить игрока из друзей"""
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    logger.info("POST /api/friends/remove")
+    
+    if not request.json or 'telegram_id' not in request.json or 'friend_player_id' not in request.json:
+        return jsonify({"error": "Missing telegram_id or friend_player_id"}), 400
+    
+    telegram_id = request.json['telegram_id']
+    friend_player_id = request.json['friend_player_id']
+    
+    conn = None
+    cursor = None
+    
+    try:
+        conn = get_db()
+        if not conn:
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = conn.cursor()
+        
+        # Получаем player_id текущего пользователя
+        cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        player_id = user[0]
+        
+        # Удаляем из друзей
+        cursor.execute("""
+            DELETE FROM friends 
+            WHERE (player1_id = %s AND player2_id = %s) 
+               OR (player1_id = %s AND player2_id = %s)
+        """, (player_id, friend_player_id, friend_player_id, player_id))
+        
+        deleted = cursor.rowcount
+        conn.commit()
+        
+        if deleted > 0:
+            logger.info(f"✅ Пользователь {player_id} удалил из друзей {friend_player_id}")
+            return jsonify({"status": "ok", "message": "Friend removed"})
+        else:
+            return jsonify({"status": "not_found", "message": "Friendship not found"})
+        
+    except Exception as e:
+        logger.error(f"ОШИБКА в remove_friend: {e}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -1616,7 +1828,7 @@ def verify_token():
         })
 
 # ============================================
-# ЭНДПОИНТЫ ДЛЯ ПОИСКА ИГРОКОВ (ДОБАВИТЬ В КОНЕЦ)
+# ЭНДПОИНТЫ ДЛЯ ПОИСКА ИГРОКОВ
 # ============================================
 
 @app.route('/api/users/all', methods=['POST', 'OPTIONS'])
@@ -1750,10 +1962,10 @@ def search_users():
             LIMIT 50
         """, (
             current_player_id,
-            f'%{query}%',  # для поиска по нику
-            f'%{query}%',   # для поиска по ID
-            f'{query}%',    # для сортировки (начинается с query)
-            f'{query}%'     # для сортировки
+            f'%{query}%',
+            f'%{query}%',
+            f'{query}%',
+            f'{query}%'
         ))
         
         users = cursor.fetchall()
@@ -1858,12 +2070,13 @@ def get_user_profile(player_id):
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
-    print("🔥 PINGSTER BACKEND - ПУБЛИЧНЫЙ ФОРУМ + ЗАЩИЩЕННЫЕ ССЫЛКИ")
-    print("✅ Форум теперь публичный — любой может зайти и смотреть")
-    print("✅ У игроков персональные защищённые ссылки (подделать нельзя)")
-    print("✅ Проверка по HMAC-SHA256 + время жизни")
-    print("✅ Эндпоинты для профиля (/api/profile/get и /api/profile/update)")
-    print("✅ Эндпоинты для аватарок (/api/profile/avatar/*)")
+    print("🔥 PINGSTER BACKEND - С ДРУЗЬЯМИ!")
+    print("✅ Добавлены эндпоинты для друзей:")
+    print("   - /api/friends/add")
+    print("   - /api/friends/list")
+    print("   - /api/friends/remove")
+    print("✅ Форум публичный")
+    print("✅ Защищенные ссылки")
     print(f"\n🚀 Сервер будет запущен на порту {port}")
     
     # Запускаем фоновые потоки
