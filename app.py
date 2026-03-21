@@ -1,17 +1,15 @@
-import sys
 import os
-import threading
+import sys
 import time
+import random
 import hashlib
 import hmac
 import base64
-from datetime import datetime, timedelta
-import random
+import threading
 import logging
 import requests
-from functools import wraps
+from datetime import datetime, timedelta
 from contextlib import contextmanager
-from cachetools import TTLCache
 import psycopg2
 import psycopg2.extras
 from flask import Flask, request, jsonify
@@ -20,9 +18,6 @@ from flask_cors import CORS
 # ============================================
 # КОНФИГУРАЦИЯ
 # ============================================
-BUILD_VERSION = int(time.time())
-
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -41,93 +36,108 @@ DB_PORT = os.getenv("DB_PORT", 5432)
 
 # Токен бота
 BOT_TOKEN = "8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8"
-BOT_USERNAME = "PingsterBot"
 FORUM_GROUP_ID = -1003753772298
 RULES_TOPIC_ID = 5
 SECRET_KEY = os.getenv("SECRET_KEY", "pingster_super_secret_key_2026_change_this")
 
 # ============================================
-# ПУЛ СОЕДИНЕНИЙ (NullPool - для gunicorn)
+# ПУЛ СОЕДИНЕНИЙ (ДЛЯ СКОРОСТИ)
 # ============================================
+from psycopg2 import pool
+
 db_pool = None
 
 def init_db_pool():
     global db_pool
     try:
-        from psycopg2.pool import NullPool
-        db_pool = NullPool(
+        db_pool = pool.SimpleConnectionPool(
+            minconn=2,
+            maxconn=15,
             host=DB_HOST,
             database=DB_NAME,
             user=DB_USER,
             password=DB_PASSWORD,
             port=DB_PORT,
-            connect_timeout=3,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=5,
-            keepalives_count=2
+            connect_timeout=3
         )
-        logger.info(f"✅ NullPool создан (новое соединение на запрос)")
+        logger.info(f"✅ Пул соединений создан (min=2, max=15)")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка создания пула: {e}")
         return False
 
-@contextmanager
 def get_db_connection():
-    conn = None
+    return db_pool.getconn()
+
+def put_db_connection(conn):
+    db_pool.putconn(conn)
+
+@contextmanager
+def get_db_cursor():
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     try:
-        conn = db_pool.getconn()
-        yield conn
+        yield cursor
+        conn.commit()
     except Exception as e:
-        if conn:
-            conn.rollback()
+        conn.rollback()
         raise e
     finally:
-        if conn:
-            db_pool.putconn(conn)
+        cursor.close()
+        put_db_connection(conn)
 
-@contextmanager
-def get_db_cursor(commit=True):
-    with get_db_connection() as conn:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        try:
-            yield cursor
-            if commit:
-                conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            cursor.close()
+# Инициализируем пул
+init_db_pool()
 
 # ============================================
-# КЭШИРОВАНИЕ
+# КЭШ (ПРОСТОЙ, НО БЫСТРЫЙ)
 # ============================================
-player_id_cache = TTLCache(maxsize=5000, ttl=300)
-profile_cache = TTLCache(maxsize=5000, ttl=300)
-forum_cache = TTLCache(maxsize=1000, ttl=600)
+class SimpleCache:
+    def __init__(self, ttl=300):
+        self.cache = {}
+        self.ttl = ttl
+    
+    def get(self, key):
+        if key in self.cache:
+            value, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return value
+            del self.cache[key]
+        return None
+    
+    def set(self, key, value):
+        self.cache[key] = (value, time.time())
+    
+    def delete(self, key):
+        self.cache.pop(key, None)
 
-def get_player_id_cached(telegram_id):
-    cache_key = f"player_id_{telegram_id}"
-    if cache_key in player_id_cache:
-        return player_id_cache[cache_key]
+player_cache = SimpleCache(ttl=300)
+profile_cache = SimpleCache(ttl=300)
+
+# ============================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================
+def get_player_id(telegram_id):
+    cached = player_cache.get(telegram_id)
+    if cached:
+        return cached
     
     try:
         with get_db_cursor() as cursor:
             cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
             result = cursor.fetchone()
             if result:
-                player_id_cache[cache_key] = result[0]
+                player_cache.set(telegram_id, result[0])
                 return result[0]
+            return None
     except Exception as e:
         logger.error(f"Ошибка get_player_id: {e}")
-    return None
+        return None
 
 def get_profile_cached(player_id):
-    cache_key = f"profile_{player_id}"
-    if cache_key in profile_cache:
-        return profile_cache[cache_key]
+    cached = profile_cache.get(player_id)
+    if cached:
+        return cached
     
     try:
         with get_db_cursor() as cursor:
@@ -137,35 +147,20 @@ def get_profile_cached(player_id):
             """, (player_id,))
             result = cursor.fetchone()
             if result:
-                profile_cache[cache_key] = dict(result)
-                return dict(result)
+                profile = dict(result)
+                profile_cache.set(player_id, profile)
+                return profile
+            return None
     except Exception as e:
         logger.error(f"Ошибка get_profile: {e}")
-    return None
+        return None
 
-def invalidate_user_cache(telegram_id=None, player_id=None):
+def invalidate_cache(telegram_id=None, player_id=None):
     if telegram_id:
-        player_id_cache.pop(f"player_id_{telegram_id}", None)
+        player_cache.delete(telegram_id)
     if player_id:
-        profile_cache.pop(f"profile_{player_id}", None)
+        profile_cache.delete(player_id)
 
-# ============================================
-# ДЕКОРАТОР ДЛЯ ЗАМЕРА ВРЕМЕНИ
-# ============================================
-def timing_decorator(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        result = func(*args, **kwargs)
-        elapsed = (time.time() - start) * 1000
-        if elapsed > 100:
-            logger.warning(f"⚠️ {func.__name__} занял {elapsed:.0f}ms")
-        return result
-    return wrapper
-
-# ============================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================
 def generate_player_id():
     return str(random.randint(10000000, 99999999))
 
@@ -173,6 +168,7 @@ def generate_random_nick():
     chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
     return ''.join(random.choice(chars) for _ in range(6))
 
+# Ранги
 RANK_TO_VALUE = {
     'Silver 1': 1000, 'Silver 2': 1100, 'Silver 3': 1200, 'Silver 4': 1300,
     'Silver Elite': 1400, 'Gold Nova 1': 1500, 'Gold Nova 2': 1600,
@@ -207,9 +203,6 @@ def get_range_buckets(mode, style, bucket):
         return bucket - 5, bucket + 5
     return None, None
 
-# ============================================
-# ФУНКЦИИ ДЛЯ ЗАЩИЩЕННЫХ ССЫЛОК
-# ============================================
 def generate_match_token(match_id, user_id, expires_at):
     data = f"{match_id}:{user_id}:{expires_at}"
     signature = hmac.new(SECRET_KEY.encode(), data.encode(), hashlib.sha256).hexdigest()[:16]
@@ -221,19 +214,14 @@ def verify_match_token(token):
         padded_token = token + '=' * (4 - len(token) % 4) if len(token) % 4 else token
         decoded = base64.urlsafe_b64decode(padded_token.encode()).decode()
         parts = decoded.split(':')
-        
         if len(parts) != 4:
             return None, None
-            
         match_id, user_id, expires_at, signature = parts
         expires_at = int(expires_at)
-        
         if int(time.time()) > expires_at:
             return None, None
-        
         expected_data = f"{match_id}:{user_id}:{expires_at}"
         expected_signature = hmac.new(SECRET_KEY.encode(), expected_data.encode(), hashlib.sha256).hexdigest()[:16]
-        
         if hmac.compare_digest(signature, expected_signature):
             return match_id, user_id
         return None, None
@@ -241,11 +229,39 @@ def verify_match_token(token):
         logger.error(f"Ошибка проверки токена: {e}")
         return None, None
 
+def check_user_in_forum_cached(user_id):
+    cache_key = f"forum_{user_id}"
+    try:
+        response = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
+            params={"chat_id": FORUM_GROUP_ID, "user_id": int(user_id)},
+            timeout=3
+        )
+        data = response.json()
+        status = data.get('result', {}).get('status') if data.get('ok') else None
+        return status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.error(f"Ошибка проверки форума: {e}")
+        return False
+
 # ============================================
 # ФОНОВЫЕ ПРОЦЕССЫ
 # ============================================
+def close_topic(topic_id):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/closeForumTopic",
+            json={"chat_id": FORUM_GROUP_ID, "message_thread_id": topic_id},
+            timeout=3
+        )
+        with get_db_cursor() as cursor:
+            cursor.execute("UPDATE games SET status = 'closed' WHERE telegram_chat_id = %s", (str(topic_id),))
+        logger.info(f"✅ Тема {topic_id} закрыта")
+    except Exception as e:
+        logger.error(f"Ошибка закрытия темы: {e}")
+
 def background_worker():
-    logger.info("🚀 Фоновый поток для закрытия тем запущен")
+    logger.info("🚀 Фоновый поток запущен")
     while True:
         try:
             with get_db_cursor() as cursor:
@@ -254,31 +270,22 @@ def background_worker():
                     WHERE expires_at < (NOW() AT TIME ZONE 'UTC') AND status = 'active'
                 """)
                 for topic in cursor.fetchall():
-                    try:
-                        requests.post(
-                            f"https://api.telegram.org/bot{BOT_TOKEN}/closeForumTopic",
-                            json={"chat_id": FORUM_GROUP_ID, "message_thread_id": topic[0]},
-                            timeout=3
-                        )
-                        cursor.execute("UPDATE games SET status = 'closed' WHERE telegram_chat_id = %s", (str(topic[0]),))
-                        logger.info(f"✅ Тема {topic[0]} закрыта")
-                    except Exception as e:
-                        logger.error(f"Ошибка закрытия темы: {e}")
+                    close_topic(topic[0])
                     time.sleep(0.3)
         except Exception as e:
             logger.error(f"Ошибка фонового процесса: {e}")
         time.sleep(60)
 
 def queue_cleaner_worker():
-    logger.info("🧹 Очистка очереди поиска запущена")
+    logger.info("🧹 Очистка очереди запущена")
     while True:
         try:
             with get_db_cursor() as cursor:
                 cursor.execute("DELETE FROM search_queue WHERE expires_at < (NOW() AT TIME ZONE 'UTC')")
                 if cursor.rowcount:
-                    logger.info(f"🧹 Очищено {cursor.rowcount} записей из очереди")
+                    logger.info(f"🧹 Очищено {cursor.rowcount} записей")
         except Exception as e:
-            logger.error(f"Ошибка очистки очереди: {e}")
+            logger.error(f"Ошибка очистки: {e}")
         time.sleep(5)
 
 # ============================================
@@ -294,50 +301,57 @@ def api_root():
 
 # ---------- ПРОФИЛЬ ----------
 @app.route('/api/profile/get', methods=['POST'])
-@timing_decorator
 def get_profile():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
-    profile = get_profile_cached(player_id)
-    if not profile:
-        return jsonify({"error": "Profile not found"}), 404
-    
-    return jsonify({"status": "ok", **profile})
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        profile = get_profile_cached(player_id)
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        
+        return jsonify({
+            "status": "ok",
+            "nick": profile['nick'],
+            "age": profile['age'],
+            "steam_link": profile['steam_link'],
+            "faceit_link": profile['faceit_link'],
+            "avatar": profile['avatar'],
+            "created_at": profile['created_at'].isoformat() if profile['created_at'] else None
+        })
+    except Exception as e:
+        logger.error(f"Ошибка get_profile: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/profile/update', methods=['POST'])
-@timing_decorator
 def update_profile():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    data = request.json
-    telegram_id = data['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
-    update_fields = []
-    update_values = []
-    
-    for field in ['nick', 'age', 'steam_link', 'faceit_link', 'avatar']:
-        if field in data and data[field] is not None:
-            update_fields.append(f"{field} = %s")
-            update_values.append(data[field])
-    
-    if not update_fields:
-        return jsonify({"error": "No fields to update"}), 400
-    
-    update_values.append(player_id)
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        update_fields = []
+        update_values = []
+        
+        for field in ['nick', 'age', 'steam_link', 'faceit_link', 'avatar']:
+            if field in data and data[field] is not None:
+                update_fields.append(f"{field} = %s")
+                update_values.append(data[field])
+        
+        if not update_fields:
+            return jsonify({"error": "No fields to update"}), 400
+        
+        update_values.append(player_id)
+        
         with get_db_cursor() as cursor:
             cursor.execute(f"""
                 UPDATE profiles SET {', '.join(update_fields)}
@@ -346,7 +360,7 @@ def update_profile():
             """, update_values)
             updated = cursor.fetchone()
         
-        invalidate_user_cache(telegram_id=telegram_id, player_id=player_id)
+        invalidate_cache(telegram_id=data['telegram_id'], player_id=player_id)
         
         return jsonify({
             "status": "ok",
@@ -361,24 +375,22 @@ def update_profile():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/profile/avatar/update', methods=['POST'])
-@timing_decorator
 def update_avatar():
-    if not request.json or 'telegram_id' not in request.json or 'avatar_url' not in request.json:
-        return jsonify({"error": "Missing fields"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    avatar_url = request.json['avatar_url']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data or 'avatar_url' not in data:
+            return jsonify({"error": "Missing fields"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
-            cursor.execute("UPDATE profiles SET avatar = %s WHERE player_id = %s RETURNING avatar", (avatar_url, player_id))
+            cursor.execute("UPDATE profiles SET avatar = %s WHERE player_id = %s RETURNING avatar", 
+                          (data['avatar_url'], player_id))
             updated = cursor.fetchone()
         
-        invalidate_user_cache(player_id=player_id)
+        invalidate_cache(player_id=player_id)
         
         return jsonify({"status": "ok", "avatar_url": updated[0] if updated else None})
     except Exception as e:
@@ -386,38 +398,41 @@ def update_avatar():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/profile/avatar/get', methods=['POST'])
-@timing_decorator
 def get_avatar():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    player_id = get_player_id_cached(request.json['telegram_id'])
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
-    profile = get_profile_cached(player_id)
-    return jsonify({"status": "ok", "avatar_url": profile.get('avatar') if profile else None})
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        profile = get_profile_cached(player_id)
+        return jsonify({"status": "ok", "avatar_url": profile.get('avatar') if profile else None})
+    except Exception as e:
+        logger.error(f"Ошибка get_avatar: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # ---------- ПОЛЬЗОВАТЕЛЬ ----------
 @app.route('/api/user/init', methods=['POST'])
-@timing_decorator
 def user_init():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    data = request.json
-    telegram_id = data['telegram_id']
-    username = data.get('username', '')
-    
-    player_id = get_player_id_cached(telegram_id)
-    
-    if player_id:
-        return jsonify({"status": "ok", "player_id": player_id})
-    
-    player_id = generate_player_id()
-    nick = username if username else generate_random_nick()
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        telegram_id = data['telegram_id']
+        username = data.get('username', '')
+        
+        player_id = get_player_id(telegram_id)
+        
+        if player_id:
+            return jsonify({"status": "ok", "player_id": player_id})
+        
+        player_id = generate_player_id()
+        nick = username if username else generate_random_nick()
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO users (telegram_id, player_id, created_at)
@@ -428,7 +443,7 @@ def user_init():
                 VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
             """, (player_id, nick, None))
         
-        invalidate_user_cache(telegram_id=telegram_id)
+        player_cache.set(telegram_id, player_id)
         
         return jsonify({"status": "ok", "player_id": player_id})
     except Exception as e:
@@ -437,25 +452,22 @@ def user_init():
 
 # ---------- ПОИСК ----------
 @app.route('/api/search/start', methods=['POST'])
-@timing_decorator
 def start_search():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    data = request.json
-    telegram_id = data['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
-    mode = data.get('mode', '').lower()
-    rank_value = data.get('rating_value', '0')
-    
-    rating_number = int(rank_value) if mode in ['faceit', 'premier'] else RANK_TO_VALUE.get(rank_value, 1000)
-    rating_bucket = rating_number // 100
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        mode = data.get('mode', '').lower()
+        rank_value = data.get('rating_value', '0')
+        
+        rating_number = int(rank_value) if mode in ['faceit', 'premier'] else RANK_TO_VALUE.get(rank_value, 1000)
+        rating_bucket = rating_number // 100
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT id FROM matches 
@@ -484,18 +496,16 @@ def start_search():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/match/check', methods=['POST'])
-@timing_decorator
 def check_match():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT id, player1_id, player2_id, expires_at, status
@@ -594,7 +604,6 @@ def check_match():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/match/status/<int:match_id>', methods=['GET'])
-@timing_decorator
 def match_status(match_id):
     try:
         with get_db_cursor() as cursor:
@@ -619,19 +628,16 @@ def match_status(match_id):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/match/respond', methods=['POST'])
-@timing_decorator
 def respond_match():
-    if not request.json or 'telegram_id' not in request.json or 'match_id' not in request.json or 'response' not in request.json:
-        return jsonify({"error": "Missing fields"}), 400
-    
-    data = request.json
-    telegram_id = data['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data or 'match_id' not in data or 'response' not in data:
+            return jsonify({"error": "Missing fields"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT player1_id, player2_id, player1_response, player2_response, expires_at, status
@@ -674,21 +680,20 @@ def respond_match():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/search/stop', methods=['POST'])
-@timing_decorator
 def stop_search():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
             deleted = cursor.rowcount
+        
         return jsonify({"status": "stopped", "deleted": deleted})
     except Exception as e:
         logger.error(f"Ошибка stop_search: {e}")
@@ -696,18 +701,16 @@ def stop_search():
 
 # ---------- ДРУЗЬЯ ----------
 @app.route('/api/friends/list', methods=['POST'])
-@timing_decorator
 def friends_list():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT 
@@ -727,8 +730,7 @@ def friends_list():
                         "avatar": profile['avatar'],
                         "age": profile['age'],
                         "steam_link": profile['steam_link'],
-                        "faceit_link": profile['faceit_link'],
-                        "added_at": None
+                        "faceit_link": profile['faceit_link']
                     })
         
         return jsonify({"status": "ok", "friends": friends})
@@ -737,68 +739,62 @@ def friends_list():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/friends/add', methods=['POST'])
-@timing_decorator
 def add_friend():
-    if not request.json or 'telegram_id' not in request.json or 'friend_player_id' not in request.json:
-        return jsonify({"error": "Missing fields"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    friend_player_id = request.json['friend_player_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data or 'friend_player_id' not in data:
+            return jsonify({"error": "Missing fields"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO friends (player1_id, player2_id, created_at)
                 VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
-                ON CONFLICT (player1_id, player2_id) DO NOTHING
-            """, (player_id, friend_player_id))
-        return jsonify({"status": "ok", "message": "Friend added"})
+                ON CONFLICT DO NOTHING
+            """, (player_id, data['friend_player_id']))
+        
+        return jsonify({"status": "ok"})
     except Exception as e:
         logger.error(f"Ошибка add_friend: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/friends/remove', methods=['POST'])
-@timing_decorator
 def remove_friend():
-    if not request.json or 'telegram_id' not in request.json or 'friend_player_id' not in request.json:
-        return jsonify({"error": "Missing fields"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    friend_player_id = request.json['friend_player_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data or 'friend_player_id' not in data:
+            return jsonify({"error": "Missing fields"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 DELETE FROM friends 
                 WHERE (player1_id = %s AND player2_id = %s) OR (player1_id = %s AND player2_id = %s)
-            """, (player_id, friend_player_id, friend_player_id, player_id))
-        return jsonify({"status": "ok", "message": "Friend removed"})
+            """, (player_id, data['friend_player_id'], data['friend_player_id'], player_id))
+        
+        return jsonify({"status": "ok"})
     except Exception as e:
         logger.error(f"Ошибка remove_friend: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ---------- ИСТОРИЯ МАТЧЕЙ ----------
 @app.route('/api/my-matches', methods=['POST'])
-@timing_decorator
 def my_matches():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    player_id = get_player_id_cached(telegram_id)
-    
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT m.id, p1.nick as player1, p2.nick as player2, 
@@ -839,16 +835,16 @@ def my_matches():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/active-match', methods=['POST'])
-@timing_decorator
 def active_match():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    player_id = get_player_id_cached(request.json['telegram_id'])
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT g.telegram_chat_link, m.id
@@ -870,14 +866,14 @@ def active_match():
 
 # ---------- ИГРЫ ----------
 @app.route('/api/game/create', methods=['POST'])
-@timing_decorator
 def create_game():
-    if not request.json or 'match_id' not in request.json:
-        return jsonify({"error": "Missing match_id"}), 400
-    
-    match_id = request.json['match_id']
-    
     try:
+        data = request.json
+        if not data or 'match_id' not in data:
+            return jsonify({"error": "Missing match_id"}), 400
+        
+        match_id = data['match_id']
+        
         with get_db_cursor() as cursor:
             cursor.execute("SELECT id, telegram_chat_link FROM games WHERE match_id = %s", (match_id,))
             existing = cursor.fetchone()
@@ -963,16 +959,16 @@ def create_game():
 
 # ---------- ПОИСК ИГРОКОВ ----------
 @app.route('/api/users/all', methods=['POST'])
-@timing_decorator
 def get_all_users():
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    player_id = get_player_id_cached(request.json['telegram_id'])
-    if not player_id:
-        return jsonify({"error": "User not found"}), 404
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT player_id, nick, avatar, age, steam_link, faceit_link
@@ -982,25 +978,25 @@ def get_all_users():
                 LIMIT 100
             """, (player_id,))
             users = [dict(row) for row in cursor.fetchall()]
+        
         return jsonify({"status": "ok", "users": users})
     except Exception as e:
         logger.error(f"Ошибка get_all_users: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/users/search', methods=['POST'])
-@timing_decorator
 def search_users():
-    if not request.json or 'telegram_id' not in request.json or 'query' not in request.json:
-        return jsonify({"error": "Missing fields"}), 400
-    
-    telegram_id = request.json['telegram_id']
-    query = request.json['query'].strip()
-    
-    player_id = get_player_id_cached(telegram_id)
-    if not player_id or not query:
-        return jsonify({"error": "Invalid request"}), 400
-    
     try:
+        data = request.json
+        if not data or 'telegram_id' not in data or 'query' not in data:
+            return jsonify({"error": "Missing fields"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        query = data['query'].strip()
+        
+        if not player_id or not query:
+            return jsonify({"error": "Invalid request"}), 400
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT player_id, nick, avatar, age, steam_link, faceit_link
@@ -1010,65 +1006,84 @@ def search_users():
                 LIMIT 50
             """, (player_id, f'%{query}%', f'%{query}%', f'{query}%'))
             users = [dict(row) for row in cursor.fetchall()]
+        
         return jsonify({"status": "ok", "users": users, "query": query})
     except Exception as e:
         logger.error(f"Ошибка search_users: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/user/profile/<player_id>', methods=['POST'])
-@timing_decorator
 def get_user_profile(player_id):
-    if not request.json or 'telegram_id' not in request.json:
-        return jsonify({"error": "Missing telegram_id"}), 400
-    
-    profile = get_profile_cached(player_id)
-    if not profile:
-        return jsonify({"error": "Profile not found"}), 404
-    
-    return jsonify({"status": "ok", "player_id": player_id, **profile})
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        profile = get_profile_cached(player_id)
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        
+        return jsonify({
+            "status": "ok",
+            "player_id": player_id,
+            "nick": profile['nick'],
+            "age": profile['age'],
+            "steam_link": profile['steam_link'],
+            "faceit_link": profile['faceit_link'],
+            "avatar": profile['avatar']
+        })
+    except Exception as e:
+        logger.error(f"Ошибка get_user_profile: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # ---------- ВЕРИФИКАЦИЯ ТОКЕНА ----------
 @app.route('/api/verify-token', methods=['POST'])
-@timing_decorator
 def verify_token():
-    if not request.json or 'token' not in request.json or 'user_id' not in request.json:
-        return jsonify({"error": "Missing fields"}), 400
-    
-    token = request.json['token']
-    user_id = str(request.json['user_id'])
-    
-    match_id, token_user_id = verify_match_token(token)
-    
-    if match_id and token_user_id == user_id:
-        return jsonify({"valid": True, "match_id": match_id})
-    return jsonify({"valid": False})
+    try:
+        data = request.json
+        if not data or 'token' not in data or 'user_id' not in data:
+            return jsonify({"error": "Missing fields"}), 400
+        
+        match_id, token_user_id = verify_match_token(data['token'])
+        
+        if match_id and token_user_id == str(data['user_id']):
+            return jsonify({"valid": True, "match_id": match_id})
+        return jsonify({"valid": False})
+    except Exception as e:
+        logger.error(f"Ошибка verify_token: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ---------- ФОРУМ ----------
+@app.route('/api/check-forum', methods=['POST'])
+def check_forum():
+    try:
+        data = request.json
+        if not data or 'user_id' not in data:
+            return jsonify({"error": "Missing user_id"}), 400
+        
+        in_forum = check_user_in_forum_cached(data['user_id'])
+        return jsonify({"in_forum": in_forum})
+    except Exception as e:
+        logger.error(f"Ошибка check_forum: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # ============================================
-# ЗАПУСК (для gunicorn - без запуска фоновых потоков)
+# ЗАПУСК
 # ============================================
-
-# Фоновые потоки запускаются ТОЛЬКО при прямом запуске python app.py
-# При использовании gunicorn фоновые потоки нужно запускать отдельно или использовать --preload
-
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    print("🔥 PINGSTER BACKEND - ОПТИМИЗИРОВАННАЯ ПОЛНАЯ ВЕРСИЯ")
+    print(f"🚀 Запуск на порту {port}")
+    print("✅ Пул соединений: 2-15")
+    print("✅ Кэш: player_id и profile (5 минут)")
+    print("✅ Все эндпоинты включены")
     
-    print("🔥 PINGSTER BACKEND - ЗАПУСК ВРУЧНУЮ")
-    
-    if not init_db_pool():
-        print("❌ Не удалось подключиться к БД")
-        sys.exit(1)
-    
+    # Запускаем фоновые потоки
     bg_thread = threading.Thread(target=background_worker, daemon=True)
     bg_thread.start()
     
     clean_thread = threading.Thread(target=queue_cleaner_worker, daemon=True)
     clean_thread.start()
     
-    print("✅ Готов к работе")
+    print("✅ Фоновые процессы запущены")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
-else:
-    # Для gunicorn - инициализируем пул при импорте
-    if not init_db_pool():
-        print("❌ Не удалось подключиться к БД при инициализации gunicorn")
-        # Не выходим, а просто логируем, т.к. gunicorn может перезапуститься
