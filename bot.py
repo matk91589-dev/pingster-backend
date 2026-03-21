@@ -7,8 +7,11 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # Твой токен
 TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 
-# URL твоего API (ВНЕШНИЙ адрес сервера)
+# URL твоего API (НОВЫЙ сервер в Амстердаме - BACKEND)
 API_URL = 'https://matk91589-dev-pingster-backend-cee8.twc1.net/api'
+
+# URL фронтенда (НОВЫЙ сервер в Амстердаме - FRONTEND)
+FRONTEND_URL = 'https://matk91589-dev-pinster-83db.twc1.net'
 
 # ID форума (из ссылки https://t.me/pingster_team)
 FORUM_USERNAME = 'pingster_team'  # username форума
@@ -65,7 +68,7 @@ def send_main_menu(user_id, player_id=None):
     markup = InlineKeyboardMarkup()
     web_app_button = InlineKeyboardButton(
         text="🚀 Открыть Pingster",
-        web_app=telebot.types.WebAppInfo(url=f'https://matk91589-dev-pinster-0b38.twc1.net?tg_id={user_id}')
+        web_app=telebot.types.WebAppInfo(url=f'{FRONTEND_URL}?tg_id={user_id}')
     )
     markup.add(web_app_button)
     
@@ -129,6 +132,8 @@ def start(message):
     username = message.from_user.username or 'no_username'
     
     print(f"👉 Получен /start от {username} (ID: {telegram_id})")
+    print(f"📡 API URL: {API_URL}")
+    print(f"🌐 FRONTEND URL: {FRONTEND_URL}")
     
     # ШАГ 1: Проверяем, есть ли юзер в форуме
     if not is_user_in_forum(telegram_id):
@@ -172,7 +177,7 @@ def help(message):
     markup = InlineKeyboardMarkup()
     web_app_button = InlineKeyboardButton(
         text="🚀 Открыть Pingster",
-        web_app=telebot.types.WebAppInfo(url='https://matk91589-dev-pinster-0b38.twc1.net')
+        web_app=telebot.types.WebAppInfo(url=FRONTEND_URL)
     )
     markup.add(web_app_button)
     
@@ -256,6 +261,7 @@ def check_forum_callback(call):
 if __name__ == '__main__':
     print("🤖 Pingster бот запущен...")
     print(f"📡 API URL: {API_URL}")
+    print(f"🌐 FRONTEND URL: {FRONTEND_URL}")
     print(f"📢 Форум: @{FORUM_USERNAME}")
     print("✅ Режим: с проверкой форума и кнопкой подтверждения")
     
