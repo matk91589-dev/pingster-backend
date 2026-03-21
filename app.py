@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 import random
 import logging
 import requests
-from functools import lru_cache, wraps
+from functools import wraps
 from contextlib import contextmanager
 from cachetools import TTLCache
-from psycopg2 import pool
+import psycopg2
 import psycopg2.extras
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -21,9 +21,6 @@ from flask_cors import CORS
 # КОНФИГУРАЦИЯ
 # ============================================
 BUILD_VERSION = int(time.time())
-
-sys.path.append('/app/.local/lib/python3.14/site-packages')
-sys.path.append(os.path.expanduser('~/.local/lib/python3.14/site-packages'))
 
 # Настройка логирования
 logging.basicConfig(
@@ -50,16 +47,15 @@ RULES_TOPIC_ID = 5
 SECRET_KEY = os.getenv("SECRET_KEY", "pingster_super_secret_key_2026_change_this")
 
 # ============================================
-# ПУЛ СОЕДИНЕНИЙ
+# ПУЛ СОЕДИНЕНИЙ (NullPool - для gunicorn)
 # ============================================
 db_pool = None
 
 def init_db_pool():
     global db_pool
     try:
-        db_pool = pool.ThreadedConnectionPool(
-            minconn=5,
-            maxconn=30,
+        from psycopg2.pool import NullPool
+        db_pool = NullPool(
             host=DB_HOST,
             database=DB_NAME,
             user=DB_USER,
@@ -71,7 +67,7 @@ def init_db_pool():
             keepalives_interval=5,
             keepalives_count=2
         )
-        logger.info(f"✅ Пул соединений создан: min=5, max=30")
+        logger.info(f"✅ NullPool создан (новое соединение на запрос)")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка создания пула: {e}")
@@ -245,75 +241,9 @@ def verify_match_token(token):
         logger.error(f"Ошибка проверки токена: {e}")
         return None, None
 
-def check_user_in_forum_cached(user_id):
-    cache_key = f"forum_{user_id}"
-    if cache_key in forum_cache:
-        return forum_cache[cache_key]
-    
-    try:
-        response = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
-            params={"chat_id": FORUM_GROUP_ID, "user_id": int(user_id)},
-            timeout=3
-        )
-        data = response.json()
-        status = data.get('result', {}).get('status') if data.get('ok') else None
-        result = status in ['member', 'administrator', 'creator']
-        forum_cache[cache_key] = result
-        return result
-    except Exception as e:
-        logger.error(f"Ошибка проверки форума: {e}")
-        return False
-
-def eject_intruder(user_id, topic_id):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/banChatMember",
-            json={"chat_id": FORUM_GROUP_ID, "user_id": int(user_id), "until_date": int(time.time()) + 30},
-            timeout=3
-        )
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/unbanChatMember",
-            json={"chat_id": FORUM_GROUP_ID, "user_id": int(user_id), "only_if_banned": True},
-            timeout=3
-        )
-        rules_link = f"https://t.me/c/{str(FORUM_GROUP_ID).replace('-100', '')}/{RULES_TOPIC_ID}"
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": int(user_id),
-                "text": f"⛔ **Вы перешли в чужой матч!**\n\nПожалуйста, ознакомьтесь с [правилами]({rules_link}).",
-                "parse_mode": "Markdown"
-            },
-            timeout=3
-        )
-        
-        with get_db_cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO intrusions (user_id, topic_id, created_at)
-                VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
-            """, (str(user_id), str(topic_id)))
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка при выкидывании чужака: {e}")
-        return False
-
 # ============================================
 # ФОНОВЫЕ ПРОЦЕССЫ
 # ============================================
-def close_topic(topic_id):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/closeForumTopic",
-            json={"chat_id": FORUM_GROUP_ID, "message_thread_id": topic_id},
-            timeout=3
-        )
-        with get_db_cursor() as cursor:
-            cursor.execute("UPDATE games SET status = 'closed' WHERE telegram_chat_id = %s", (str(topic_id),))
-        logger.info(f"✅ Тема {topic_id} закрыта")
-    except Exception as e:
-        logger.error(f"Ошибка закрытия темы: {e}")
-
 def background_worker():
     logger.info("🚀 Фоновый поток для закрытия тем запущен")
     while True:
@@ -324,7 +254,16 @@ def background_worker():
                     WHERE expires_at < (NOW() AT TIME ZONE 'UTC') AND status = 'active'
                 """)
                 for topic in cursor.fetchall():
-                    close_topic(topic[0])
+                    try:
+                        requests.post(
+                            f"https://api.telegram.org/bot{BOT_TOKEN}/closeForumTopic",
+                            json={"chat_id": FORUM_GROUP_ID, "message_thread_id": topic[0]},
+                            timeout=3
+                        )
+                        cursor.execute("UPDATE games SET status = 'closed' WHERE telegram_chat_id = %s", (str(topic[0]),))
+                        logger.info(f"✅ Тема {topic[0]} закрыта")
+                    except Exception as e:
+                        logger.error(f"Ошибка закрытия темы: {e}")
                     time.sleep(0.3)
         except Exception as e:
             logger.error(f"Ошибка фонового процесса: {e}")
@@ -815,7 +754,7 @@ def add_friend():
             cursor.execute("""
                 INSERT INTO friends (player1_id, player2_id, created_at)
                 VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (player1_id, player2_id) DO NOTHING
             """, (player_id, friend_player_id))
         return jsonify({"status": "ok", "message": "Friend added"})
     except Exception as e:
@@ -1105,13 +1044,16 @@ def verify_token():
     return jsonify({"valid": False})
 
 # ============================================
-# ЗАПУСК
+# ЗАПУСК (для gunicorn - без запуска фоновых потоков)
 # ============================================
+
+# Фоновые потоки запускаются ТОЛЬКО при прямом запуске python app.py
+# При использовании gunicorn фоновые потоки нужно запускать отдельно или использовать --preload
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
-    print("🔥 PINGSTER BACKEND - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ")
-    print(f"🚀 Запуск на порту {port}")
+    print("🔥 PINGSTER BACKEND - ЗАПУСК ВРУЧНУЮ")
     
     if not init_db_pool():
         print("❌ Не удалось подключиться к БД")
@@ -1123,7 +1065,10 @@ if __name__ == '__main__':
     clean_thread = threading.Thread(target=queue_cleaner_worker, daemon=True)
     clean_thread.start()
     
-    print("✅ Готов к работе (300+ пользователей)")
-    print("✅ Пул соединений: 5-30")
-    print("✅ Кэш: player_id, profile, forum")
+    print("✅ Готов к работе")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+else:
+    # Для gunicorn - инициализируем пул при импорте
+    if not init_db_pool():
+        print("❌ Не удалось подключиться к БД при инициализации gunicorn")
+        # Не выходим, а просто логируем, т.к. gunicorn может перезапуститься
