@@ -8,7 +8,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 
 # URL твоего API (ВНЕШНИЙ адрес сервера)
-API_URL = 'https://matk91589-dev-pingster-backend-e306.twc1.net/api'
+API_URL = 'https://matk91589-dev-pingster-backend-cee8.twc1.net/api'
 
 # ID форума (из ссылки https://t.me/pingster_team)
 FORUM_USERNAME = 'pingster_team'  # username форума
