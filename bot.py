@@ -11,7 +11,7 @@ TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 API_URL = 'https://matk91589-dev-pingster-backend-cee8.twc1.net/api'
 
 # URL фронтенда (НОВЫЙ сервер в Амстердаме - FRONTEND)
-FRONTEND_URL = 'https://matk91589-dev-pinster-83db.twc1.net'
+FRONTEND_URL = 'https://matk91589-dev-pinster-0530.twc1.net'
 
 # ID форума (из ссылки https://t.me/pingster_team)
 FORUM_USERNAME = 'pingster_team'  # username форума
