@@ -4,4 +4,3 @@ psycopg2-binary
 requests
 gunicorn
 pyTelegramBotAPI
-cachetools
