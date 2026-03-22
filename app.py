@@ -298,7 +298,7 @@ def home():
 def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
-# ---------- ПРОФИЛЬ ----------
+# ---------- ПРОФИЛЬ (БЕЗ АВАТАРА) ----------
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
     try:
@@ -314,17 +314,41 @@ def get_profile():
         if not profile:
             return jsonify({"error": "Profile not found"}), 404
         
+        # ✅ УБИРАЕМ avatar из ответа
         return jsonify({
             "status": "ok",
             "nick": profile['nick'],
             "age": profile['age'],
             "steam_link": profile['steam_link'],
             "faceit_link": profile['faceit_link'],
-            "avatar": profile['avatar'],
             "created_at": profile['created_at'].isoformat() if profile['created_at'] else None
         })
     except Exception as e:
         logger.error(f"Ошибка get_profile: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ---------- АВАТАР (ОТДЕЛЬНЫЙ ЭНДПОИНТ) ----------
+@app.route('/api/profile/avatar', methods=['POST'])
+def get_profile_avatar():
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        profile = get_profile_cached(player_id)
+        if not profile:
+            return jsonify({"error": "Profile not found"}), 404
+        
+        return jsonify({
+            "status": "ok",
+            "avatar": profile.get('avatar')
+        })
+    except Exception as e:
+        logger.error(f"Ошибка get_profile_avatar: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/profile/update', methods=['POST'])
@@ -394,23 +418,6 @@ def update_avatar():
         return jsonify({"status": "ok", "avatar_url": updated[0] if updated else None})
     except Exception as e:
         logger.error(f"Ошибка update_avatar: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/profile/avatar/get', methods=['POST'])
-def get_avatar():
-    try:
-        data = request.json
-        if not data or 'telegram_id' not in data:
-            return jsonify({"error": "Missing telegram_id"}), 400
-        
-        player_id = get_player_id(data['telegram_id'])
-        if not player_id:
-            return jsonify({"error": "User not found"}), 404
-        
-        profile = get_profile_cached(player_id)
-        return jsonify({"status": "ok", "avatar_url": profile.get('avatar') if profile else None})
-    except Exception as e:
-        logger.error(f"Ошибка get_avatar: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ---------- ПОЛЬЗОВАТЕЛЬ ----------
@@ -1076,6 +1083,7 @@ if __name__ == '__main__':
     print("✅ Пул соединений: 2-15")
     print("✅ Кэш: player_id и profile (5 минут)")
     print("✅ Все эндпоинты включены")
+    print("✅ Аватар вынесен в отдельный эндпоинт /api/profile/avatar")
     
     # Запускаем фоновые потоки
     bg_thread = threading.Thread(target=background_worker, daemon=True)
