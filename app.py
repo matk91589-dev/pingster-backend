@@ -25,7 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# Настройка CORS для всех эндпоинтов
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 
 # Конфигурация БД
 DB_HOST = os.getenv("DB_HOST", "85.239.33.182")
@@ -298,7 +299,7 @@ def home():
 def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
-# ---------- ПРОФИЛЬ (БЕЗ АВАТАРА) ----------
+# ---------- ПРОФИЛЬ ----------
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
     try:
@@ -314,7 +315,6 @@ def get_profile():
         if not profile:
             return jsonify({"error": "Profile not found"}), 404
         
-        # ✅ УБИРАЕМ avatar из ответа
         return jsonify({
             "status": "ok",
             "nick": profile['nick'],
@@ -327,7 +327,6 @@ def get_profile():
         logger.error(f"Ошибка get_profile: {e}")
         return jsonify({"error": str(e)}), 500
 
-# ---------- АВАТАР (ОТДЕЛЬНЫЙ ЭНДПОИНТ) ----------
 @app.route('/api/profile/avatar', methods=['POST'])
 def get_profile_avatar():
     try:
@@ -789,6 +788,51 @@ def remove_friend():
         logger.error(f"Ошибка remove_friend: {e}")
         return jsonify({"error": str(e)}), 500
 
+# ---------- ЛИДЕРБОРД ----------
+@app.route('/api/users/leaderboard', methods=['POST'])
+def get_leaderboard():
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            return jsonify({"error": "User not found"}), 404
+        
+        with get_db_cursor() as cursor:
+            # Получаем топ-100 игроков по пингкоинам
+            cursor.execute("""
+                SELECT 
+                    u.player_id,
+                    p.nick,
+                    p.avatar,
+                    COALESCE(u.pingcoins, 0) as pingcoins
+                FROM users u
+                JOIN profiles p ON u.player_id = p.player_id
+                WHERE u.pingcoins IS NOT NULL
+                ORDER BY u.pingcoins DESC
+                LIMIT 100
+            """)
+            top_players = cursor.fetchall()
+            
+            leaderboard = []
+            for row in top_players:
+                leaderboard.append({
+                    "player_id": row['player_id'],
+                    "nick": row['nick'],
+                    "avatar": row['avatar'],
+                    "pingcoins": row['pingcoins']
+                })
+            
+            return jsonify({
+                "status": "ok",
+                "leaderboard": leaderboard
+            })
+    except Exception as e:
+        logger.error(f"Ошибка leaderboard: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # ---------- ИСТОРИЯ МАТЧЕЙ ----------
 @app.route('/api/my-matches', methods=['POST'])
 def my_matches():
@@ -1083,7 +1127,7 @@ if __name__ == '__main__':
     print("✅ Пул соединений: 2-15")
     print("✅ Кэш: player_id и profile (5 минут)")
     print("✅ Все эндпоинты включены")
-    print("✅ Аватар вынесен в отдельный эндпоинт /api/profile/avatar")
+    print("✅ Добавлен эндпоинт /api/users/leaderboard")
     
     # Запускаем фоновые потоки
     bg_thread = threading.Thread(target=background_worker, daemon=True)
