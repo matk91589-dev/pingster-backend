@@ -59,7 +59,7 @@ def init_db_pool():
             user=DB_USER,
             password=DB_PASSWORD,
             port=DB_PORT,
-            connect_timeout=10  # Увеличил с 3 до 10 секунд
+            connect_timeout=10
         )
         logger.info(f"✅ Пул соединений создан (min=2, max=15)")
         
@@ -127,6 +127,31 @@ profile_cache = SimpleCache(ttl=300)
 # ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
+def update_user_activity(telegram_id):
+    """Обновляет last_active и is_online для пользователя"""
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                UPDATE users 
+                SET last_active = (NOW() AT TIME ZONE 'UTC'),
+                    is_online = TRUE
+                WHERE telegram_id = %s
+            """, (telegram_id,))
+    except Exception as e:
+        logger.error(f"Ошибка update_user_activity: {e}")
+
+def set_user_offline(telegram_id):
+    """Устанавливает is_online = FALSE"""
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                UPDATE users 
+                SET is_online = FALSE
+                WHERE telegram_id = %s
+            """, (telegram_id,))
+    except Exception as e:
+        logger.error(f"Ошибка set_user_offline: {e}")
+
 def get_player_id(telegram_id):
     cached = player_cache.get(telegram_id)
     if cached:
@@ -242,7 +267,6 @@ def verify_match_token(token):
 def check_user_in_forum_cached(user_id):
     """Проверка, состоит ли пользователь в форуме"""
     try:
-        # Приводим user_id к int (Telegram API требует число)
         user_id_int = int(user_id)
         
         response = requests.get(
@@ -313,6 +337,23 @@ def queue_cleaner_worker():
             logger.error(f"Ошибка очистки: {e}")
         time.sleep(5)
 
+def online_cleaner_worker():
+    """Сбрасывает is_online для неактивных больше 5 минут"""
+    logger.info("🟢 Очистка онлайн-статуса запущена")
+    while True:
+        try:
+            with get_db_cursor() as cursor:
+                cursor.execute("""
+                    UPDATE users 
+                    SET is_online = FALSE 
+                    WHERE last_active < (NOW() AT TIME ZONE 'UTC' - INTERVAL '5 minutes')
+                """)
+                if cursor.rowcount:
+                    logger.info(f"🟢 Сброшен онлайн для {cursor.rowcount} пользователей")
+        except Exception as e:
+            logger.error(f"Ошибка online_cleaner: {e}")
+        time.sleep(60)
+
 # ============================================
 # ЭНДПОИНТЫ
 # ============================================
@@ -324,6 +365,34 @@ def home():
 def api_root():
     return jsonify({"message": "Pingster API is running!", "status": "ok"})
 
+# ---------- СТАТУС ПОЛЬЗОВАТЕЛЯ ----------
+@app.route('/api/user/status', methods=['POST'])
+def get_user_status():
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            return jsonify({"error": "Missing telegram_id"}), 400
+        
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT is_online, 
+                       EXTRACT(EPOCH FROM (NOW() AT TIME ZONE 'UTC' - last_active)) as seconds_ago
+                FROM users 
+                WHERE telegram_id = %s
+            """, (data['telegram_id'],))
+            result = cursor.fetchone()
+            
+            if result:
+                is_online = result['is_online'] and (result['seconds_ago'] or 0) < 300
+                return jsonify({
+                    "is_online": is_online,
+                    "last_active_seconds_ago": int(result['seconds_ago'] or 0)
+                })
+            return jsonify({"error": "User not found"}), 404
+    except Exception as e:
+        logger.error(f"Ошибка get_user_status: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # ---------- ПРОФИЛЬ ----------
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
@@ -331,6 +400,8 @@ def get_profile():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -359,6 +430,8 @@ def get_profile_avatar():
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
         
+        update_user_activity(data['telegram_id'])
+        
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
             return jsonify({"error": "User not found"}), 404
@@ -381,6 +454,8 @@ def update_profile():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -428,6 +503,8 @@ def update_avatar():
         if not data or 'telegram_id' not in data or 'avatar_url' not in data:
             return jsonify({"error": "Missing fields"}), 400
         
+        update_user_activity(data['telegram_id'])
+        
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
             return jsonify({"error": "User not found"}), 404
@@ -458,6 +535,7 @@ def user_init():
         player_id = get_player_id(telegram_id)
         
         if player_id:
+            update_user_activity(telegram_id)
             return jsonify({"status": "ok", "player_id": player_id})
         
         player_id = generate_player_id()
@@ -465,8 +543,8 @@ def user_init():
         
         with get_db_cursor() as cursor:
             cursor.execute("""
-                INSERT INTO users (telegram_id, player_id, created_at)
-                VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
+                INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online)
+                VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC'), TRUE)
             """, (telegram_id, player_id))
             cursor.execute("""
                 INSERT INTO profiles (player_id, nick, avatar, created_at)
@@ -487,6 +565,8 @@ def start_search():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         # Опционально: проверяем, вступил ли пользователь в форум
         # Раскомментируй, когда захочешь включить проверку
@@ -538,6 +618,8 @@ def check_match():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -671,6 +753,8 @@ def respond_match():
         if not data or 'telegram_id' not in data or 'match_id' not in data or 'response' not in data:
             return jsonify({"error": "Missing fields"}), 400
         
+        update_user_activity(data['telegram_id'])
+        
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
             return jsonify({"error": "User not found"}), 404
@@ -727,6 +811,8 @@ def stop_search():
         if not player_id:
             return jsonify({"error": "User not found"}), 404
         
+        set_user_offline(data['telegram_id'])
+        
         with get_db_cursor() as cursor:
             cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
             deleted = cursor.rowcount
@@ -743,6 +829,8 @@ def friends_list():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -782,6 +870,8 @@ def add_friend():
         if not data or 'telegram_id' not in data or 'friend_player_id' not in data:
             return jsonify({"error": "Missing fields"}), 400
         
+        update_user_activity(data['telegram_id'])
+        
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
             return jsonify({"error": "User not found"}), 404
@@ -804,6 +894,8 @@ def remove_friend():
         data = request.json
         if not data or 'telegram_id' not in data or 'friend_player_id' not in data:
             return jsonify({"error": "Missing fields"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -828,12 +920,13 @@ def get_leaderboard():
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
         
+        update_user_activity(data['telegram_id'])
+        
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
             return jsonify({"error": "User not found"}), 404
         
         with get_db_cursor() as cursor:
-            # Получаем топ-100 игроков по пингкоинам
             cursor.execute("""
                 SELECT 
                     u.player_id,
@@ -872,6 +965,8 @@ def my_matches():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -922,6 +1017,8 @@ def active_match():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -1012,29 +1109,6 @@ def create_game():
             """, (match_id, player1_id, player2_id, topic_id, public_link, expires_at))
             game_id = cursor.fetchone()[0]
             
-            # Отключаем отправку сообщений (закомментировано)
-            # try:
-            #     requests.post(
-            #         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            #         json={
-            #             "chat_id": int(telegram_id1),
-            #             "text": f"✅ **Матч #{match_id} создан!**\nСоперник: {nick2}\n\n🔗 [Перейти в чат]({public_link})",
-            #             "parse_mode": "Markdown"
-            #         },
-            #         timeout=3
-            #     )
-            #     requests.post(
-            #         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            #         json={
-            #             "chat_id": int(telegram_id2),
-            #             "text": f"✅ **Матч #{match_id} создан!**\nСоперник: {nick1}\n\n🔗 [Перейти в чат]({public_link})",
-            #             "parse_mode": "Markdown"
-            #         },
-            #         timeout=3
-            #     )
-            # except Exception as e:
-            #     logger.error(f"Ошибка отправки уведомления: {e}")
-            
             return jsonify({"status": "ok", "game_id": game_id, "chat_link": public_link})
     except Exception as e:
         logger.error(f"Ошибка create_game: {e}")
@@ -1047,6 +1121,8 @@ def get_all_users():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -1073,6 +1149,8 @@ def search_users():
         data = request.json
         if not data or 'telegram_id' not in data or 'query' not in data:
             return jsonify({"error": "Missing fields"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         query = data['query'].strip()
@@ -1101,6 +1179,8 @@ def get_user_profile(player_id):
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        update_user_activity(data['telegram_id'])
         
         profile = get_profile_cached(player_id)
         if not profile:
@@ -1144,7 +1224,6 @@ def check_forum():
         if not data or 'user_id' not in data:
             return jsonify({"error": "Missing user_id"}), 400
         
-        # Приводим user_id к int для корректной работы
         try:
             user_id_int = int(data['user_id'])
         except (ValueError, TypeError):
@@ -1167,7 +1246,9 @@ if __name__ == '__main__':
     print("✅ Кэш: player_id и profile (5 минут)")
     print("✅ Все эндпоинты включены")
     print("✅ Добавлен эндпоинт /api/users/leaderboard")
+    print("✅ Добавлен эндпоинт /api/user/status")
     print("✅ Отключены уведомления в Telegram")
+    print("✅ Отслеживание активности пользователей")
     
     # Запускаем фоновые потоки
     bg_thread = threading.Thread(target=background_worker, daemon=True)
@@ -1175,6 +1256,9 @@ if __name__ == '__main__':
     
     clean_thread = threading.Thread(target=queue_cleaner_worker, daemon=True)
     clean_thread.start()
+    
+    online_thread = threading.Thread(target=online_cleaner_worker, daemon=True)
+    online_thread.start()
     
     print("✅ Фоновые процессы запущены")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
