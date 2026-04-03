@@ -59,9 +59,18 @@ def init_db_pool():
             user=DB_USER,
             password=DB_PASSWORD,
             port=DB_PORT,
-            connect_timeout=3
+            connect_timeout=10  # Увеличил с 3 до 10 секунд
         )
         logger.info(f"✅ Пул соединений создан (min=2, max=15)")
+        
+        # Проверяем пул при старте
+        try:
+            test_conn = db_pool.getconn()
+            db_pool.putconn(test_conn)
+            logger.info("✅ Проверка пула успешна — соединение работает")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке пула: {e}")
+        
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка создания пула: {e}")
@@ -1003,27 +1012,28 @@ def create_game():
             """, (match_id, player1_id, player2_id, topic_id, public_link, expires_at))
             game_id = cursor.fetchone()[0]
             
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": int(telegram_id1),
-                        "text": f"✅ **Матч #{match_id} создан!**\nСоперник: {nick2}\n\n🔗 [Перейти в чат]({public_link})",
-                        "parse_mode": "Markdown"
-                    },
-                    timeout=3
-                )
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    json={
-                        "chat_id": int(telegram_id2),
-                        "text": f"✅ **Матч #{match_id} создан!**\nСоперник: {nick1}\n\n🔗 [Перейти в чат]({public_link})",
-                        "parse_mode": "Markdown"
-                    },
-                    timeout=3
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки уведомления: {e}")
+            # Отключаем отправку сообщений (закомментировано)
+            # try:
+            #     requests.post(
+            #         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            #         json={
+            #             "chat_id": int(telegram_id1),
+            #             "text": f"✅ **Матч #{match_id} создан!**\nСоперник: {nick2}\n\n🔗 [Перейти в чат]({public_link})",
+            #             "parse_mode": "Markdown"
+            #         },
+            #         timeout=3
+            #     )
+            #     requests.post(
+            #         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            #         json={
+            #             "chat_id": int(telegram_id2),
+            #             "text": f"✅ **Матч #{match_id} создан!**\nСоперник: {nick1}\n\n🔗 [Перейти в чат]({public_link})",
+            #             "parse_mode": "Markdown"
+            #         },
+            #         timeout=3
+            #     )
+            # except Exception as e:
+            #     logger.error(f"Ошибка отправки уведомления: {e}")
             
             return jsonify({"status": "ok", "game_id": game_id, "chat_link": public_link})
     except Exception as e:
@@ -1153,10 +1163,11 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print("🔥 PINGSTER BACKEND - ПОЛНАЯ ВЕРСИЯ С БД")
     print(f"🚀 Запуск на порту {port}")
-    print("✅ Пул соединений: 2-15")
+    print("✅ Пул соединений: 2-15 (connect_timeout=10)")
     print("✅ Кэш: player_id и profile (5 минут)")
     print("✅ Все эндпоинты включены")
     print("✅ Добавлен эндпоинт /api/users/leaderboard")
+    print("✅ Отключены уведомления в Telegram")
     
     # Запускаем фоновые потоки
     bg_thread = threading.Thread(target=background_worker, daemon=True)
