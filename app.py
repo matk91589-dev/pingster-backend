@@ -231,15 +231,31 @@ def verify_match_token(token):
         return None, None
 
 def check_user_in_forum_cached(user_id):
+    """Проверка, состоит ли пользователь в форуме"""
     try:
+        # Приводим user_id к int (Telegram API требует число)
+        user_id_int = int(user_id)
+        
         response = requests.get(
             f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
-            params={"chat_id": FORUM_GROUP_ID, "user_id": int(user_id)},
-            timeout=3
+            params={"chat_id": FORUM_GROUP_ID, "user_id": user_id_int},
+            timeout=5
         )
         data = response.json()
-        status = data.get('result', {}).get('status') if data.get('ok') else None
-        return status in ['member', 'administrator', 'creator']
+        
+        if not data.get('ok'):
+            logger.error(f"Telegram API error: {data}")
+            return False
+            
+        status = data.get('result', {}).get('status')
+        is_member = status in ['member', 'administrator', 'creator']
+        
+        logger.info(f"Проверка форума: user_id={user_id_int}, status={status}, result={is_member}")
+        return is_member
+        
+    except ValueError:
+        logger.error(f"Некорректный user_id: {user_id}")
+        return False
     except Exception as e:
         logger.error(f"Ошибка проверки форума: {e}")
         return False
@@ -462,6 +478,13 @@ def start_search():
         data = request.json
         if not data or 'telegram_id' not in data:
             return jsonify({"error": "Missing telegram_id"}), 400
+        
+        # Опционально: проверяем, вступил ли пользователь в форум
+        # Раскомментируй, когда захочешь включить проверку
+        """
+        if not check_user_in_forum_cached(data['telegram_id']):
+            return jsonify({"error": "Вы не вступили в форум. Перейдите по ссылке и нажмите 'Присоединиться'"}), 403
+        """
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
@@ -1111,7 +1134,13 @@ def check_forum():
         if not data or 'user_id' not in data:
             return jsonify({"error": "Missing user_id"}), 400
         
-        in_forum = check_user_in_forum_cached(data['user_id'])
+        # Приводим user_id к int для корректной работы
+        try:
+            user_id_int = int(data['user_id'])
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid user_id"}), 400
+        
+        in_forum = check_user_in_forum_cached(user_id_int)
         return jsonify({"in_forum": in_forum})
     except Exception as e:
         logger.error(f"Ошибка check_forum: {e}")
