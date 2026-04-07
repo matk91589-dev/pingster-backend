@@ -1915,7 +1915,7 @@ signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
 # ============================================
-# ЗАПУСК
+# ЗАПУСК ДЛЯ РАЗРАБОТКИ
 # ============================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
@@ -1924,12 +1924,8 @@ if __name__ == '__main__':
     print("🔥 PINGSTER BACKEND v2.0.0")
     print("=" * 50)
     print(f"🚀 Запуск на порту {port}")
-    print(f"✅ Пул соединений: 2-15")
-    print(f"✅ Кэш: {'Redis' if cache.use_redis else 'In-memory'}")
-    print(f"✅ Rate limiting: {RATE_LIMIT_REQUESTS} запросов/{RATE_LIMIT_WINDOW} сек")
-    print(f"✅ Все эндпоинты защищены rate limiting")
-    print(f"✅ Добавлена валидация входных данных")
-    print(f"✅ Health check доступен на /health")
+    print(f"✅ Пул соединений: активен")
+    print(f"✅ Кэш: Redis/Memory")
     print("=" * 50)
     
     # Запускаем фоновые потоки
@@ -1944,11 +1940,5 @@ if __name__ == '__main__':
     
     print("✅ Фоновые процессы запущены")
     
-    # Запускаем приложение
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=False,
-        threaded=True,
-        use_reloader=False  # Отключаем авто-перезагрузку для фоновых потоков
-    )
+    # Запускаем Flask (только для разработки)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
