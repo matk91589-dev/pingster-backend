@@ -1915,6 +1915,18 @@ signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
 # ============================================
+# ДЛЯ GUNICORN (PRODUCTION) - ДОБАВИТЬ ЭТО!
+# ============================================
+# Убеждаемся что пул БД создан перед запуском
+if db_pool is None:
+    init_db_pool()
+
+# Явно указываем переменную для Gunicorn
+# Некоторые хостинги ищут application, другие app
+application = app
+app = app
+
+# ============================================
 # ЗАПУСК ДЛЯ РАЗРАБОТКИ
 # ============================================
 if __name__ == '__main__':
