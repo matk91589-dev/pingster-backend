@@ -842,6 +842,37 @@ def update_avatar():
         logger.error(f"Ошибка update_avatar: {e}")
         raise AppError(str(e), 500, "INTERNAL_ERROR")
 
+# ---------- АВАТАР (ПОЛУЧЕНИЕ) ----------
+@app.route('/api/profile/avatar', methods=['POST', 'OPTIONS'])
+@rate_limit(limit=30, window=60)
+def get_avatar():
+    """Получение аватара пользователя"""
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            raise ValidationError("Missing telegram_id", ["telegram_id is required"])
+        
+        player_id = get_player_id(data['telegram_id'])
+        if not player_id:
+            raise NotFoundError("User not found")
+        
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT avatar FROM profiles WHERE player_id = %s", (player_id,))
+            result = cursor.fetchone()
+            
+        return jsonify({
+            "status": "ok",
+            "avatar": result[0] if result and result[0] else None
+        })
+    except AppError:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка get_avatar: {e}")
+        raise AppError(str(e), 500, "INTERNAL_ERROR")
+
 # ---------- ПОЛЬЗОВАТЕЛЬ ----------
 @app.route('/api/user/init', methods=['POST'])
 @rate_limit(limit=10, window=60)
