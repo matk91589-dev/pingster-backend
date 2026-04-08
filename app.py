@@ -15,6 +15,7 @@ from functools import wraps
 from collections import defaultdict
 from typing import Optional, Dict, List, Tuple, Any
 import signal
+import requests
 
 import psycopg2
 import psycopg2.extras
