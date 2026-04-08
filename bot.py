@@ -7,10 +7,10 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # Твой токен
 TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
 
-# URL твоего API (НОВЫЙ сервер в Амстердаме - BACKEND)
+# URL твоего API (БЭКЕНД)
 API_URL = 'https://matk91589-dev-pingster-backend-cee8.twc1.net/api'
 
-# URL фронтенда (НОВЫЙ сервер в Амстердаме - FRONTEND)
+# URL фронтенда (ФРОНТЕНД)
 FRONTEND_URL = 'https://matk91589-dev-pinster-0530.twc1.net'
 
 # ID форума (из ссылки https://t.me/pingster_team)
@@ -66,9 +66,15 @@ def delete_temp_message(user_id):
 def send_main_menu(user_id, player_id=None):
     """Отправляет главное меню с кнопкой Mini App"""
     markup = InlineKeyboardMarkup()
+    
+    # 🔥 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: добавляем параметр v=timestamp, чтобы Telegram не кэшировал
+    cache_buster = int(time.time())
+    
     web_app_button = InlineKeyboardButton(
         text="🚀 Открыть Pingster",
-        web_app=telebot.types.WebAppInfo(url=f'{FRONTEND_URL}?tg_id={user_id}')
+        web_app=telebot.types.WebAppInfo(
+            url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={user_id}'
+        )
     )
     markup.add(web_app_button)
     
@@ -116,11 +122,6 @@ def send_forum_invite(user_id):
     
     # Сохраняем сообщение, чтобы потом удалить
     save_temp_message(user_id, msg.message_id)
-
-# Генерация ссылки на Mini App (через Telegram)
-def get_mini_app_url(telegram_id):
-    bot_username = 'pingster_team_bot'
-    return f'https://t.me/{bot_username}/app?startapp={telegram_id}'
 
 # ============================================
 # ОБРАБОТЧИКИ КОМАНД
@@ -175,9 +176,13 @@ def start(message):
 @bot.message_handler(commands=['help'])
 def help(message):
     markup = InlineKeyboardMarkup()
+    
+    # Тоже добавляем cache buster для единообразия
+    cache_buster = int(time.time())
+    
     web_app_button = InlineKeyboardButton(
         text="🚀 Открыть Pingster",
-        web_app=telebot.types.WebAppInfo(url=FRONTEND_URL)
+        web_app=telebot.types.WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}')
     )
     markup.add(web_app_button)
     
@@ -264,6 +269,7 @@ if __name__ == '__main__':
     print(f"🌐 FRONTEND URL: {FRONTEND_URL}")
     print(f"📢 Форум: @{FORUM_USERNAME}")
     print("✅ Режим: с проверкой форума и кнопкой подтверждения")
+    print("✅ Cache buster активен — Telegram будет загружать свежую версию")
     
     # Удаляем вебхук (на всякий случай)
     bot.remove_webhook()
