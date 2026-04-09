@@ -1926,6 +1926,36 @@ def check_forum():
         logger.error(f"Ошибка check_forum: {e}")
         raise AppError(str(e), 500, "INTERNAL_ERROR")
 
+@app.route('/api/user/update-username', methods=['POST'])
+@rate_limit(limit=30, window=60)
+def update_username():
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            raise ValidationError("Missing telegram_id", ["telegram_id is required"])
+        
+        telegram_id = data['telegram_id']
+        username = data.get('username', '')
+        
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                UPDATE users 
+                SET username = %s 
+                WHERE telegram_id = %s
+                RETURNING username
+            """, (username, telegram_id))
+            result = cursor.fetchone()
+            
+            if result:
+                return jsonify({"status": "ok", "username": result[0]})
+            else:
+                raise NotFoundError("User not found")
+    except AppError:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка update_username: {e}")
+        raise AppError(str(e), 500, "INTERNAL_ERROR")
+
 # ---------- СТАТИСТИКА ----------
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
