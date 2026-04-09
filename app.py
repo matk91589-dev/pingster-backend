@@ -1207,6 +1207,28 @@ def respond_match():
             
             if r1 == 'accept' and r2 == 'accept':
                 cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
+                
+                # 🔥 ДОБАВЛЯЕМ ДРУГ ДРУГА В ДРУЗЬЯ (ТИММЕЙТЫ) 🔥
+                player1_id = match['player1_id']
+                player2_id = match['player2_id']
+                
+                # Проверяем, не друзья ли уже
+                cursor.execute("""
+                    SELECT 1 FROM friends 
+                    WHERE (player1_id = %s AND player2_id = %s) 
+                       OR (player1_id = %s AND player2_id = %s)
+                """, (player1_id, player2_id, player2_id, player1_id))
+                already_friends = cursor.fetchone()
+                
+                if not already_friends:
+                    cursor.execute("""
+                        INSERT INTO friends (player1_id, player2_id, created_at)
+                        VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'))
+                    """, (player1_id, player2_id))
+                    logger.info(f"✅ Добавлены в друзья: {player1_id} и {player2_id}")
+                else:
+                    logger.info(f"⏭️ Пользователи {player1_id} и {player2_id} уже в друзьях")
+                
                 return jsonify({"status": "accepted", "both_accepted": True})
             elif r1 == 'reject' or r2 == 'reject':
                 cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
