@@ -2,51 +2,87 @@ import telebot
 import requests
 import random
 import time
+import os
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from dotenv import load_dotenv
 
-# Твой токен
-TOKEN = '8484054850:AAGwAcn1URrcKtikJKclqP8Z8oYs0wbIYY8'
+# Загрузка переменных окружения из .env файла
+load_dotenv()
 
-# URL твоего API (БЭКЕНД)
-API_URL = 'https://matk91589-dev-pingster-backend-cee8.twc1.net/api'
+# ============================================
+# КОНФИГУРАЦИЯ ИЗ .env
+# ============================================
+# Токен бота (теперь в .env)
+TOKEN = os.getenv('BOT_TOKEN')
+
+# URL API (БЭКЕНД)
+API_URL = os.getenv('API_URL', 'https://matk91589-dev-pingster-backend-cee8.twc1.net/api')
 
 # URL фронтенда (ФРОНТЕНД)
-FRONTEND_URL = 'https://matk91589-dev-pinster-0530.twc1.net'
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://matk91589-dev-pinster-0530.twc1.net')
 
-# ID форума (из ссылки https://t.me/pingster_team)
-FORUM_USERNAME = 'pingster_team'  # username форума
-FORUM_LINK = 'https://t.me/pingster_team'  # ссылка на форум
+# ID форума
+FORUM_USERNAME = os.getenv('FORUM_USERNAME', 'pingster_team')
+FORUM_LINK = os.getenv('FORUM_LINK', 'https://t.me/pingster_team')
+
+# Проверка наличия токена
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден в .env файле! Создай .env с BOT_TOKEN=твой_токен")
 
 bot = telebot.TeleBot(TOKEN)
 
-# Хранилище временных сообщений (можно заменить на БД)
+# Хранилище временных сообщений
 temp_messages = {}
 
 # ============================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ФУНКЦИИ С ПОВТОРАМИ
 # ============================================
 
-def is_user_in_forum(user_id):
-    """Проверяет, состоит ли пользователь в форуме"""
-    try:
-        response = requests.get(
-            f"https://api.telegram.org/bot{TOKEN}/getChatMember",
-            params={
-                "chat_id": f"@{FORUM_USERNAME}",
-                "user_id": user_id
-            },
-            timeout=5
-        )
-        data = response.json()
-        print(f"📡 Проверка форума для {user_id}: {data}")
+def api_request_with_retry(url, json_data, max_retries=3, delay=2):
+    """Выполняет запрос к API с повторными попытками при ошибке"""
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, json=json_data, timeout=15)
+            if response.status_code == 200:
+                return response
+            print(f"⚠️ Попытка {attempt + 1}: статус {response.status_code}")
+        except requests.exceptions.Timeout:
+            print(f"⚠️ Попытка {attempt + 1}: таймаут")
+        except requests.exceptions.ConnectionError:
+            print(f"⚠️ Попытка {attempt + 1}: ошибка соединения")
+        except Exception as e:
+            print(f"⚠️ Попытка {attempt + 1}: {e}")
         
-        if data.get('ok'):
-            status = data['result']['status']
-            return status in ['member', 'creator', 'administrator']
-        return False
-    except Exception as e:
-        print(f"❌ Ошибка проверки форума: {e}")
-        return False
+        if attempt < max_retries - 1:
+            time.sleep(delay)
+    
+    return None
+
+def is_user_in_forum(user_id):
+    """Проверяет, состоит ли пользователь в форуме (с повторами)"""
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                f"https://api.telegram.org/bot{TOKEN}/getChatMember",
+                params={
+                    "chat_id": f"@{FORUM_USERNAME}",
+                    "user_id": user_id
+                },
+                timeout=10
+            )
+            data = response.json()
+            print(f"📡 Проверка форума для {user_id}: {data}")
+            
+            if data.get('ok'):
+                status = data['result']['status']
+                return status in ['member', 'creator', 'administrator']
+            return False
+        except Exception as e:
+            print(f"❌ Попытка {attempt + 1} ошибки проверки форума: {e}")
+            if attempt < 2:
+                time.sleep(1)
+    
+    return False
 
 def save_temp_message(user_id, message_id):
     """Сохраняет ID временного сообщения"""
@@ -67,7 +103,6 @@ def send_main_menu(user_id, player_id=None):
     """Отправляет главное меню с кнопкой Mini App"""
     markup = InlineKeyboardMarkup()
     
-    # 🔥 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: добавляем параметр v=timestamp, чтобы Telegram не кэшировал
     cache_buster = int(time.time())
     
     web_app_button = InlineKeyboardButton(
@@ -81,7 +116,7 @@ def send_main_menu(user_id, player_id=None):
     text = f"🎮 **Добро пожаловать в Pingster!**\n\n"
     if player_id:
         text += f"👤 Твой игровой ID: `{player_id}`\n"
-    text += f"⭐ Твой рейтинг: **0**\n\n"
+    text += f"⭐ Твоя репутация: **0**\n\n"
     text += f"👇 Нажми кнопку ниже, чтобы открыть Mini App:"
     
     bot.send_message(
@@ -95,13 +130,11 @@ def send_forum_invite(user_id):
     """Отправляет приглашение вступить в форум с кнопкой подтверждения"""
     markup = InlineKeyboardMarkup(row_width=1)
     
-    # Кнопка вступления в форум
     forum_btn = InlineKeyboardButton(
         text="📢 1. Вступить в форум Pingster",
         url=FORUM_LINK
     )
     
-    # Кнопка проверки (Я вступил)
     check_btn = InlineKeyboardButton(
         text="✅ 2. Я вступил, продолжить",
         callback_data="check_forum"
@@ -120,7 +153,6 @@ def send_forum_invite(user_id):
         reply_markup=markup
     )
     
-    # Сохраняем сообщение, чтобы потом удалить
     save_temp_message(user_id, msg.message_id)
 
 # ============================================
@@ -138,7 +170,6 @@ def start(message):
     
     # ШАГ 1: Проверяем, есть ли юзер в форуме
     if not is_user_in_forum(telegram_id):
-        # 🟡 НОВИЧОК — отправляем приглашение вступить
         print(f"🟡 Новичок {telegram_id} — отправляем приглашение в форум")
         send_forum_invite(telegram_id)
         return
@@ -146,38 +177,31 @@ def start(message):
     # 🟢 СТАРЫЙ ЮЗЕР — продолжаем как обычно
     print(f"🟢 Старый юзер {telegram_id} — отправляем главное меню")
     
-    try:
-        print(f"📡 Отправка запроса на {API_URL}/user/init")
-        
-        response = requests.post(f'{API_URL}/user/init', json={
-            'telegram_id': telegram_id,
-            'username': username
-        }, timeout=10)
-        
-        print(f"✅ Ответ от API: {response.status_code}")
-        print(f"📦 Текст ответа: {response.text}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('status') == 'ok':
-                send_main_menu(telegram_id, data.get('player_id'))
-            else:
-                bot.reply_to(message, "❌ Ошибка при регистрации")
+    # Используем запрос с повторами
+    response = api_request_with_retry(
+        f'{API_URL}/user/init',
+        {'telegram_id': telegram_id, 'username': username},
+        max_retries=3,
+        delay=2
+    )
+    
+    if response and response.status_code == 200:
+        data = response.json()
+        if data.get('status') == 'ok':
+            send_main_menu(telegram_id, data.get('player_id'))
         else:
-            bot.reply_to(message, f"❌ Ошибка сервера: {response.status_code}")
-            
-    except requests.exceptions.ConnectionError as e:
-        bot.reply_to(message, "❌ Не могу подключиться к серверу. Проверь, запущен ли сервер.")
-        print(f"❌ ConnectionError: {e}")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
-        print(f"❌ Ошибка: {str(e)}")
+            bot.reply_to(message, "❌ Ошибка при регистрации")
+    else:
+        # Если API не ответил после всех попыток
+        bot.reply_to(
+            message, 
+            "⚠️ Сервер временно недоступен. Пожалуйста, попробуй через 10 секунд.\n\nЕсли проблема повторяется, напиши @pingster_support"
+        )
 
 @bot.message_handler(commands=['help'])
 def help(message):
     markup = InlineKeyboardMarkup()
     
-    # Тоже добавляем cache buster для единообразия
     cache_buster = int(time.time())
     
     web_app_button = InlineKeyboardButton(
@@ -222,12 +246,9 @@ def check_forum_callback(call):
     """Обрабатывает нажатие кнопки 'Я вступил, продолжить'"""
     user_id = call.from_user.id
     
-    # Проверяем, вступил ли пользователь в форум
     if is_user_in_forum(user_id):
-        # Удаляем временное сообщение
         delete_temp_message(user_id)
         
-        # Убираем кнопки (редактируем сообщение)
         try:
             bot.edit_message_text(
                 "✅ Отлично! Ты в форуме. Загружаем главное меню...",
@@ -237,23 +258,19 @@ def check_forum_callback(call):
         except:
             pass
         
-        # Отправляем главное меню
-        try:
-            response = requests.post(f'{API_URL}/user/init', json={
-                'telegram_id': user_id,
-                'username': 'from_forum'
-            }, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                send_main_menu(user_id, data.get('player_id'))
-            else:
-                send_main_menu(user_id)
-        except Exception as e:
-            print(f"❌ Ошибка при отправке главного меню: {e}")
+        response = api_request_with_retry(
+            f'{API_URL}/user/init',
+            {'telegram_id': user_id, 'username': 'from_forum'},
+            max_retries=2,
+            delay=1
+        )
+        
+        if response and response.status_code == 200:
+            data = response.json()
+            send_main_menu(user_id, data.get('player_id'))
+        else:
             send_main_menu(user_id)
     else:
-        # Если не вступил — показываем предупреждение
         bot.answer_callback_query(
             call.id,
             "❌ Ты ещё не в форуме! Сначала нажми кнопку «Вступить» ☝️",
@@ -269,9 +286,9 @@ if __name__ == '__main__':
     print(f"🌐 FRONTEND URL: {FRONTEND_URL}")
     print(f"📢 Форум: @{FORUM_USERNAME}")
     print("✅ Режим: с проверкой форума и кнопкой подтверждения")
-    print("✅ Cache buster активен — Telegram будет загружать свежую версию")
+    print("✅ Cache buster активен")
+    print("✅ Повторные попытки при ошибках (3 раза)")
     
-    # Удаляем вебхук (на всякий случай)
     bot.remove_webhook()
     
     while True:
