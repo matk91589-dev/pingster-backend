@@ -1305,6 +1305,10 @@ def friends_list():
             for record in friend_records:
                 profile = get_profile_cached(record['friend_id'])
                 if profile:
+                    #  ПОЛУЧАЕМ USERNAME ИЗ ТАБЛИЦЫ USERS 
+                    cursor.execute("SELECT username, telegram_id FROM users WHERE player_id = %s", (record['friend_id'],))
+                    user_data = cursor.fetchone()
+                    
                     friends.append({
                         "player_id": record['friend_id'],
                         "nick": profile['nick'],
@@ -1312,6 +1316,8 @@ def friends_list():
                         "age": profile.get('age'),
                         "steam_link": profile.get('steam_link'),
                         "faceit_link": profile.get('faceit_link'),
+                        "username": user_data['username'] if user_data else None,
+                        "telegram_id": user_data['telegram_id'] if user_data else None,
                         "added_at": record['created_at'].isoformat() if record['created_at'] else None
                     })
         
@@ -1325,7 +1331,7 @@ def friends_list():
     except Exception as e:
         logger.error(f"Ошибка friends_list: {e}")
         raise AppError(str(e), 500, "INTERNAL_ERROR")
-
+        
 @app.route('/api/friends/add', methods=['POST'])
 @rate_limit(limit=20, window=60)
 def add_friend():
