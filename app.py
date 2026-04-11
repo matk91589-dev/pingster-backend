@@ -528,18 +528,22 @@ def send_match_notification(telegram_id, match_id, teammate_nick, chat_link):
         logger.error(f"❌ Ошибка send_match_notification: {e}")
 
 def update_reputation(telegram_id, delta):
-    """Обновляет репутацию (rating) пользователя"""
+    """Обновляет репутацию (rating) и leadercoins пользователя"""
     try:
+        # За положительную оценку +75 leadercoins, за отрицательную -50
+        coins_delta = 75 if delta > 0 else -50
+        
         with get_db_cursor() as cursor:
             cursor.execute("""
                 UPDATE users 
-                SET rating = COALESCE(rating, 0) + %s
+                SET rating = COALESCE(rating, 0) + %s,
+                    leadercoins = COALESCE(leadercoins, 0) + %s
                 WHERE telegram_id = %s
-                RETURNING rating
-            """, (delta, telegram_id))
+                RETURNING rating, leadercoins
+            """, (delta, coins_delta, telegram_id))
             result = cursor.fetchone()
             if result:
-                logger.info(f"✅ Рейтинг пользователя {telegram_id} обновлён, новое значение: {result[0]}")
+                logger.info(f"✅ Рейтинг: {result[0]}, Leadercoins: {result[1]} для {telegram_id}")
             else:
                 logger.warning(f"⚠️ Пользователь {telegram_id} не найден")
     except Exception as e:
@@ -733,6 +737,46 @@ def get_user_status():
         logger.error(f"Ошибка get_user_status: {e}")
         raise AppError(str(e), 500, "INTERNAL_ERROR")
 
+# ---------- ЕЖЕДНЕВНЫЙ БОНУС ----------
+@app.route('/api/user/daily-bonus', methods=['POST'])
+@rate_limit(limit=5, window=60)
+def daily_bonus():
+    try:
+        data = request.json
+        telegram_id = data.get('telegram_id')
+        if not telegram_id:
+            raise ValidationError("Missing telegram_id")
+        
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT last_daily_bonus FROM users WHERE telegram_id = %s", (telegram_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                raise NotFoundError("User not found")
+            
+            last_bonus = result[0]
+            now = datetime.utcnow()
+            
+            if not last_bonus or (now - last_bonus).total_seconds() > 12 * 3600:
+                cursor.execute("""
+                    UPDATE users 
+                    SET leadercoins = COALESCE(leadercoins, 0) + 50,
+                        last_daily_bonus = (NOW() AT TIME ZONE 'UTC')
+                    WHERE telegram_id = %s
+                    RETURNING leadercoins
+                """, (telegram_id,))
+                new_coins = cursor.fetchone()[0]
+                
+                return jsonify({"status": "ok", "bonus": True, "leadercoins": new_coins})
+            else:
+                time_left = 12 * 3600 - int((now - last_bonus).total_seconds())
+                return jsonify({"status": "ok", "bonus": False, "time_left": time_left})
+    except AppError:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка daily_bonus: {e}")
+        raise AppError(str(e), 500)
+
 # ---------- ПРОФИЛЬ ----------
 @app.route('/api/profile/get', methods=['POST'])
 @rate_limit()
@@ -831,6 +875,35 @@ def update_profile():
                 RETURNING nick, age, steam_link, faceit_link, avatar
             """, update_values)
             updated = cursor.fetchone()
+            
+            # 🔥 ПРОВЕРЯЕМ ЗАПОЛНЕНИЕ ПРОФИЛЯ (БОНУС +200 leadercoins)
+            if updated:
+                nick_ok = updated[0] is not None and updated[0] != ''
+                age_ok = updated[1] is not None and updated[1] != ''
+                steam_ok = updated[2] is not None and updated[2] != ''
+                faceit_ok = updated[3] is not None and updated[3] != ''
+                
+                # Профиль считается заполненным, если есть ник, возраст и хотя бы одна ссылка
+                profile_filled = nick_ok and age_ok and (steam_ok or faceit_ok)
+                
+                if profile_filled:
+                    # Проверяем, получал ли уже бонус
+                    cursor.execute("""
+                        SELECT profile_completed FROM users WHERE player_id = %s
+                    """, (player_id,))
+                    result = cursor.fetchone()
+                    
+                    if not result or not result[0]:  # Ещё не получал бонус
+                        cursor.execute("""
+                            UPDATE users 
+                            SET leadercoins = COALESCE(leadercoins, 0) + 200,
+                                profile_completed = TRUE
+                            WHERE player_id = %s
+                            RETURNING leadercoins
+                        """, (player_id,))
+                        bonus_result = cursor.fetchone()
+                        if bonus_result:
+                            logger.info(f"🎉 Профиль заполнен для {player_id}! +200 leadercoins (всего: {bonus_result[0]})")
         
         invalidate_cache(telegram_id=data['telegram_id'], player_id=player_id)
         
@@ -1690,7 +1763,7 @@ def create_game():
             create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
             topic_response = requests.post(create_topic_url, json={
                 "chat_id": FORUM_GROUP_ID,
-                "name": f"🎮 Match #{match_id} | {nick1} vs {nick2}",
+                "name": f"🎮 Match #{match_id} | {nick1} & {nick2}",
                 "icon_color": 0x6FB9F0
             }, timeout=5)
             
@@ -1713,9 +1786,10 @@ def create_game():
             game_id = cursor.fetchone()[0]
             
             welcome_message = (
-                f" **Матч #{match_id} создан**\n\n"
-                f"👤 {nick1} & {nick2}\n"
-                f"Вы можете продолжить в этом чате или перейти лс"
+                f"🎮 **Матч #{match_id} создан!**\n\n"
+                f" {nick1} & {nick2}\n"
+                f" Режим: {mode.upper()}\n"
+                f" вы можете перейти в лс или остаться в чате, чат активен 30 минут"
             )
             
             requests.post(
@@ -1732,6 +1806,25 @@ def create_game():
             # 🔥 ОТПРАВЛЯЕМ ЛИЧНЫЕ УВЕДОМЛЕНИЯ С КНОПКАМИ ОЦЕНКИ
             send_match_notification(telegram_id1, match_id, nick2, public_link)
             send_match_notification(telegram_id2, match_id, nick1, public_link)
+            
+            # 🔥 ПРОВЕРЯЕМ ПЕРВЫЙ МАТЧ ДЛЯ ОБОИХ ИГРОКОВ (+150 leadercoins)
+            for pid in [player1_id, player2_id]:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM games 
+                    WHERE player1_id = %s OR player2_id = %s
+                """, (pid, pid))
+                games_count = cursor.fetchone()[0]
+                
+                if games_count == 1:  # Это первый матч!
+                    cursor.execute("""
+                        UPDATE users 
+                        SET leadercoins = COALESCE(leadercoins, 0) + 150
+                        WHERE player_id = %s
+                        RETURNING telegram_id
+                    """, (pid,))
+                    result = cursor.fetchone()
+                    if result:
+                        logger.info(f"🎉 Первый матч для игрока {pid}! +150 leadercoins")
             
             return jsonify({
                 "status": "ok",
