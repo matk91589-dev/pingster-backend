@@ -278,14 +278,14 @@ def validate_age(age: Any) -> Tuple[bool, Optional[str], Optional[int]]:
 
 def validate_steam_link(link: str) -> Tuple[bool, Optional[str]]:
     if not link:
-        return True, None  # Поле опционально
+        return True, None
     if not link.startswith(('https://steamcommunity.com/', 'https://s.team/')):
         return False, "Invalid Steam profile link"
     return True, None
 
 def validate_faceit_link(link: str) -> Tuple[bool, Optional[str]]:
     if not link:
-        return True, None  # Поле опционально
+        return True, None
     if not link.startswith('https://www.faceit.com/'):
         return False, "Invalid FaceIT profile link"
     return True, None
@@ -358,7 +358,6 @@ def get_profile_cached(player_id: str) -> Optional[Dict]:
             result = cursor.fetchone()
             if result:
                 profile = dict(result)
-                # Конвертируем datetime в строку для кэша
                 if profile.get('created_at'):
                     profile['created_at'] = profile['created_at'].isoformat()
                 cache.set(f"profile:{player_id}", profile)
@@ -399,7 +398,6 @@ def get_rank_index(rank: str) -> int:
 
 def calculate_score(player: Dict, candidate: Dict, mode: str) -> int:
     """Расчет совместимости игроков (меньше = лучше)"""
-    # Разница в рейтинге
     if mode in ['faceit', 'premier']:
         player_rating = int(player.get('rank', 0))
         cand_rating = int(candidate.get('rank', 0))
@@ -410,7 +408,6 @@ def calculate_score(player: Dict, candidate: Dict, mode: str) -> int:
             get_rank_index(candidate.get('rank', ''))
         ) * 100
     
-    # Разница в возрасте
     age_diff = abs((player.get('age') or 0) - (candidate.get('age') or 0))
     
     return rating_diff + (age_diff * 50)
@@ -437,7 +434,6 @@ def generate_match_token(match_id: int, user_id: str, expires_at: int) -> str:
 def verify_match_token(token: str) -> Tuple[Optional[int], Optional[str]]:
     """Проверка токена матча"""
     try:
-        # Добавляем padding если нужно
         padded_token = token + '=' * (4 - len(token) % 4) if len(token) % 4 else token
         decoded = base64.urlsafe_b64decode(padded_token.encode()).decode()
         parts = decoded.split(':')
@@ -494,6 +490,60 @@ def check_user_in_forum(user_id: str) -> bool:
     except Exception as e:
         logger.error(f"Ошибка проверки форума: {e}")
         return False
+
+# ============================================
+# РЕПУТАЦИЯ - ОТПРАВКА УВЕДОМЛЕНИЙ
+# ============================================
+def send_match_notification(telegram_id, match_id, teammate_nick, chat_link):
+    """Отправляет личное сообщение игроку с кнопками оценки"""
+    try:
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "👉 Перейти в чат", "url": chat_link}],
+                [
+                    {"text": "👍", "callback_data": f"vote_up_{telegram_id}_{match_id}"},
+                    {"text": "👎", "callback_data": f"vote_down_{telegram_id}_{match_id}"}
+                ]
+            ]
+        }
+        
+        message = f"🎮 У вас создан матч #{match_id} с игроком {teammate_nick}\n\nОцените тиммейта:"
+        
+        response = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": telegram_id,
+                "text": message,
+                "reply_markup": keyboard
+            },
+            timeout=5
+        )
+        
+        if response.ok:
+            logger.info(f"✅ Уведомление отправлено пользователю {telegram_id}")
+        else:
+            logger.error(f"❌ Ошибка отправки уведомления: {response.text}")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка send_match_notification: {e}")
+
+def update_reputation(telegram_id, delta):
+    """Обновляет репутацию (rating) пользователя"""
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                UPDATE users 
+                SET rating = COALESCE(rating, 0) + %s
+                WHERE telegram_id = %s
+                RETURNING rating
+            """, (delta, telegram_id))
+            result = cursor.fetchone()
+            if result:
+                logger.info(f"✅ Рейтинг пользователя {telegram_id} обновлён, новое значение: {result[0]}")
+            else:
+                logger.warning(f"⚠️ Пользователь {telegram_id} не найден")
+    except Exception as e:
+        logger.error(f"❌ Ошибка update_reputation: {e}")
 
 # ============================================
 # ОБРАБОТЧИКИ ОШИБОК
@@ -600,7 +650,6 @@ def health_check():
         "services": {}
     }
     
-    # Проверка БД
     try:
         with get_db_cursor() as cursor:
             cursor.execute("SELECT 1")
@@ -609,7 +658,6 @@ def health_check():
         status["status"] = "unhealthy"
         status["services"]["database"] = f"error: {str(e)}"
     
-    # Информация о пуле
     if db_pool:
         status["services"]["db_pool"] = {
             "min": db_pool.minconn,
@@ -617,12 +665,9 @@ def health_check():
             "closed": db_pool.closed
         }
     
-    # Проверка кэша
     status["services"]["cache"] = "redis" if cache.use_redis else "memory"
     
-    # Проверка Telegram API (опционально)
     try:
-        import requests
         response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=3)
         status["services"]["telegram"] = "connected" if response.ok else "error"
     except:
@@ -642,7 +687,8 @@ def home():
         "endpoints": [
             "/health", "/api", "/api/user/init",
             "/api/profile/get", "/api/profile/update",
-            "/api/search/start", "/api/match/check"
+            "/api/search/start", "/api/match/check",
+            "/api/reputation/vote"
         ]
     })
 
@@ -734,7 +780,6 @@ def update_profile():
         if not player_id:
             raise NotFoundError("User not found")
         
-        # Валидация полей
         validation_errors = []
         update_fields = []
         update_values = []
@@ -811,7 +856,6 @@ def update_avatar():
         if not data or 'telegram_id' not in data or 'avatar_url' not in data:
             raise ValidationError("Missing fields", ["telegram_id and avatar_url are required"])
         
-        # Валидация URL аватара
         is_valid, error = validate_avatar_url(data['avatar_url'])
         if not is_valid:
             raise ValidationError(error, ["avatar_url"])
@@ -846,7 +890,6 @@ def update_avatar():
 @app.route('/api/profile/avatar', methods=['POST', 'OPTIONS'])
 @rate_limit(limit=30, window=60)
 def get_avatar():
-    """Получение аватара пользователя"""
     if request.method == 'OPTIONS':
         return '', 200
     
@@ -891,13 +934,12 @@ def user_init():
             update_user_activity(telegram_id)
             return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
         
-        # Создаем нового пользователя
         player_id = generate_player_id()
         nick = username if username and len(username) <= 32 else generate_random_nick()
         
         with get_db_cursor() as cursor:
             cursor.execute("""
-                INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online, pingcoins)
+                INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online, leadercoins)
                 VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC'), TRUE, 1000)
             """, (telegram_id, player_id))
             cursor.execute("""
@@ -930,18 +972,10 @@ def start_search():
         
         update_user_activity(data['telegram_id'])
         
-        # Проверка форума (опционально, раскомментировать при необходимости)
-        # if not check_user_in_forum(data['telegram_id']):
-        #     raise ValidationError(
-        #         "You must join the forum first",
-        #         ["forum_required"]
-        #     )
-        
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
             raise NotFoundError("User not found")
         
-        # Проверяем, не в матче ли уже пользователь
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT id FROM matches 
@@ -952,7 +986,6 @@ def start_search():
             if cursor.fetchone():
                 raise ConflictError("User already in a match")
             
-            # Удаляем из очереди если был
             cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
             
             mode = data.get('mode', '').lower()
@@ -1011,11 +1044,9 @@ def check_match():
             raise NotFoundError("User not found")
         
         with get_db_cursor() as cursor:
-            # Используем advisory lock для предотвращения двойного матчмейкинга
             lock_key = hash(player_id) % 2**31
             cursor.execute("SELECT pg_try_advisory_xact_lock(%s)", (lock_key,))
             
-            # Проверяем существующий матч
             cursor.execute("""
                 SELECT id, player1_id, player2_id, expires_at, status
                 FROM matches
@@ -1047,7 +1078,6 @@ def check_match():
                         "expires_at": match['expires_at'].isoformat() + "Z"
                     })
             
-            # Проверяем очередь
             cursor.execute("""
                 SELECT * FROM search_queue 
                 WHERE player_id = %s AND expires_at > (NOW() AT TIME ZONE 'UTC')
@@ -1081,7 +1111,6 @@ def check_match():
             if not candidates:
                 return jsonify({"match_found": False})
             
-            # Сортируем по совместимости
             candidates_list = []
             for cand in candidates:
                 player_data = {
@@ -1106,7 +1135,6 @@ def check_match():
             """, (player_id, best['player_id'], current['mode'], expires_at))
             match_id = cursor.fetchone()['id']
             
-            # Удаляем обоих из очереди
             cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
                           (player_id, best['player_id']))
             
@@ -1208,11 +1236,9 @@ def respond_match():
             if r1 == 'accept' and r2 == 'accept':
                 cursor.execute("UPDATE matches SET status = 'accepted' WHERE id = %s", (data['match_id'],))
                 
-                # 🔥 ДОБАВЛЯЕМ ДРУГ ДРУГА В ДРУЗЬЯ (ТИММЕЙТЫ) 🔥
                 player1_id = match['player1_id']
                 player2_id = match['player2_id']
                 
-                # Проверяем, не друзья ли уже
                 cursor.execute("""
                     SELECT 1 FROM friends 
                     WHERE (player1_id = %s AND player2_id = %s) 
@@ -1305,7 +1331,6 @@ def friends_list():
             for record in friend_records:
                 profile = get_profile_cached(record['friend_id'])
                 if profile:
-                    #  ПОЛУЧАЕМ USERNAME ИЗ ТАБЛИЦЫ USERS 
                     cursor.execute("SELECT username, telegram_id FROM users WHERE player_id = %s", (record['friend_id'],))
                     user_data = cursor.fetchone()
                     
@@ -1349,7 +1374,6 @@ def add_friend():
         if str(player_id) == str(data['friend_player_id']):
             raise ValidationError("Cannot add yourself as friend", ["friend_player_id"])
         
-        # Проверяем, существует ли друг
         friend_profile = get_profile_cached(data['friend_player_id'])
         if not friend_profile:
             raise NotFoundError("Friend not found")
@@ -1432,30 +1456,30 @@ def get_leaderboard():
         
         with get_db_cursor() as cursor:
             # Получаем общее количество
-            cursor.execute("SELECT COUNT(*) FROM users WHERE pingcoins IS NOT NULL")
+            cursor.execute("SELECT COUNT(*) FROM users WHERE leadercoins IS NOT NULL")
             total = cursor.fetchone()[0]
             
-            # Получаем топ игроков
+            # Получаем топ игроков по leadercoins
             cursor.execute("""
                 SELECT 
                     u.player_id,
                     p.nick,
                     p.avatar,
-                    COALESCE(u.pingcoins, 0) as pingcoins,
-                    ROW_NUMBER() OVER (ORDER BY COALESCE(u.pingcoins, 0) DESC) as rank
+                    COALESCE(u.leadercoins, 0) as leadercoins,
+                    ROW_NUMBER() OVER (ORDER BY COALESCE(u.leadercoins, 0) DESC) as rank
                 FROM users u
                 JOIN profiles p ON u.player_id = p.player_id
-                WHERE u.pingcoins IS NOT NULL
-                ORDER BY u.pingcoins DESC
+                WHERE u.leadercoins IS NOT NULL
+                ORDER BY u.leadercoins DESC
                 LIMIT %s OFFSET %s
             """, (per_page, offset))
             top_players = cursor.fetchall()
             
-            # Получаем ранг текущего пользователя
+            # Получаем ранг текущего пользователя по leadercoins
             cursor.execute("""
                 SELECT COUNT(*) + 1 as rank
                 FROM users
-                WHERE pingcoins > (SELECT COALESCE(pingcoins, 0) FROM users WHERE player_id = %s)
+                WHERE leadercoins > (SELECT COALESCE(leadercoins, 0) FROM users WHERE player_id = %s)
             """, (player_id,))
             user_rank = cursor.fetchone()['rank'] if cursor.rowcount > 0 else None
             
@@ -1466,7 +1490,7 @@ def get_leaderboard():
                     "player_id": row['player_id'],
                     "nick": row['nick'],
                     "avatar": row['avatar'],
-                    "pingcoins": row['pingcoins']
+                    "leadercoins": row['leadercoins']
                 })
             
             return jsonify({
@@ -1506,7 +1530,6 @@ def my_matches():
         offset = (page - 1) * per_page
         
         with get_db_cursor() as cursor:
-            # Активные матчи
             cursor.execute("""
                 SELECT m.id, p1.nick as player1, p2.nick as player2, 
                        g.telegram_chat_link, g.status,
@@ -1522,7 +1545,6 @@ def my_matches():
             """, (player_id, player_id))
             active = cursor.fetchall()
             
-            # История матчей (с пагинацией)
             cursor.execute("""
                 SELECT m.id, p1.nick as player1, p2.nick as player2, 
                        g.telegram_chat_link, g.created_at, g.status
@@ -1537,7 +1559,6 @@ def my_matches():
             """, (player_id, player_id, per_page, offset))
             history = cursor.fetchall()
             
-            # Общее количество завершенных матчей
             cursor.execute("""
                 SELECT COUNT(*)
                 FROM matches m
@@ -1617,7 +1638,6 @@ def create_game():
         match_id = data['match_id']
         
         with get_db_cursor() as cursor:
-            # Проверяем, не создана ли уже игра
             cursor.execute("SELECT id, telegram_chat_link FROM games WHERE match_id = %s", (match_id,))
             existing = cursor.fetchone()
             if existing:
@@ -1628,7 +1648,6 @@ def create_game():
                     "already_exists": True
                 })
             
-            # Ждем подтверждения матча (максимум 5 попыток)
             match = None
             for i in range(5):
                 cursor.execute("""
@@ -1645,7 +1664,6 @@ def create_game():
             
             player1_id, player2_id, mode = match
             
-            # Получаем информацию о пользователях
             cursor.execute("""
                 SELECT u.telegram_id, p.nick 
                 FROM users u 
@@ -1668,7 +1686,6 @@ def create_game():
             telegram_id1, nick1 = user1
             telegram_id2, nick2 = user2
             
-            # Создаем тему в Telegram
             import requests
             create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
             topic_response = requests.post(create_topic_url, json={
@@ -1695,13 +1712,10 @@ def create_game():
             """, (match_id, player1_id, player2_id, topic_id, public_link, expires_at))
             game_id = cursor.fetchone()[0]
             
-            # Отправляем пригласительное сообщение в тему
             welcome_message = (
-                f"🎮 **Матч #{match_id} создан!**\n\n"
-                f"👤 {nick1} vs {nick2}\n"
-                f"📊 Режим: {mode.upper()}\n"
-                f"⏰ Время на игру: 30 минут\n\n"
-                f"Удачной игры! 🎯"
+                f" **Матч #{match_id} создан**\n\n"
+                f"👤 {nick1} & {nick2}\n"
+                f"Вы можете продолжить в этом чате или перейти лс"
             )
             
             requests.post(
@@ -1715,11 +1729,15 @@ def create_game():
                 timeout=3
             )
             
+            # 🔥 ОТПРАВЛЯЕМ ЛИЧНЫЕ УВЕДОМЛЕНИЯ С КНОПКАМИ ОЦЕНКИ
+            send_match_notification(telegram_id1, match_id, nick2, public_link)
+            send_match_notification(telegram_id2, match_id, nick1, public_link)
+            
             return jsonify({
                 "status": "ok",
                 "game_id": game_id,
                 "chat_link": public_link,
-                "expires_in": 1800  # 30 минут в секундах
+                "expires_in": 1800
             })
     except AppError:
         raise
@@ -1756,7 +1774,6 @@ def get_all_users():
             """, (player_id, per_page, offset))
             users = [dict(row) for row in cursor.fetchall()]
             
-            # Общее количество
             cursor.execute("SELECT COUNT(*) FROM profiles WHERE player_id != %s", (player_id,))
             total = cursor.fetchone()[0]
         
@@ -1849,7 +1866,6 @@ def get_user_profile(player_id: str):
         if not profile:
             raise NotFoundError("Profile not found")
         
-        # Получаем дополнительную информацию (онлайн статус)
         with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT is_online, 
@@ -1990,6 +2006,59 @@ def get_stats():
         logger.error(f"Ошибка get_stats: {e}")
         return jsonify({"error": str(e)}), 500
 
+# ---------- РЕПУТАЦИЯ (CALLBACK ОТ БОТА) ----------
+@app.route('/api/reputation/vote', methods=['POST'])
+def reputation_vote():
+    """Обработка голосов за репутацию от бота"""
+    try:
+        data = request.json
+        if not data or 'callback_data' not in data:
+            raise ValidationError("Missing callback_data")
+        
+        callback_data = data['callback_data']
+        message = data.get('message', {})
+        chat_id = message.get('chat', {}).get('id')
+        message_id = message.get('message_id')
+        
+        # Парсим callback_data: vote_up_12345_42 или vote_down_12345_42
+        parts = callback_data.split('_')
+        if len(parts) != 4:
+            return jsonify({"status": "error", "message": "Invalid callback_data"}), 400
+        
+        vote_type = parts[1]  # up или down
+        teammate_telegram_id = parts[2]
+        match_id = parts[3]
+        
+        # Обновляем репутацию (rating)
+        delta = 1 if vote_type == 'up' else -1
+        update_reputation(teammate_telegram_id, delta)
+        
+        # Обновляем сообщение в боте (убираем кнопки, показываем оценку)
+        if chat_id and message_id:
+            vote_emoji = "👍" if vote_type == 'up' else "👎"
+            new_text = message.get('text', '').replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_emoji}')
+            
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+                json={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "reply_markup": {
+                        "inline_keyboard": [
+                            [{"text": "👉 Перейти в чат", "url": message['reply_markup']['inline_keyboard'][0][0]['url']}]
+                        ]
+                    }
+                },
+                timeout=5
+            )
+        
+        return jsonify({"status": "ok"})
+        
+    except Exception as e:
+        logger.error(f"Ошибка reputation_vote: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 # ============================================
 # GRACEFUL SHUTDOWN
 # ============================================
@@ -2005,14 +2074,11 @@ signal.signal(signal.SIGTERM, shutdown_handler)
 signal.signal(signal.SIGINT, shutdown_handler)
 
 # ============================================
-# ДЛЯ GUNICORN (PRODUCTION) - ДОБАВИТЬ ЭТО!
+# ДЛЯ GUNICORN (PRODUCTION)
 # ============================================
-# Убеждаемся что пул БД создан перед запуском
 if db_pool is None:
     init_db_pool()
 
-# Явно указываем переменную для Gunicorn
-# Некоторые хостинги ищут application, другие app
 application = app
 app = app
 
@@ -2023,11 +2089,12 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
     print("=" * 50)
-    print("🔥 PINGSTER BACKEND v2.0.0")
+    print("🔥 PINGSTER BACKEND v2.1.0")
     print("=" * 50)
     print(f"🚀 Запуск на порту {port}")
     print(f"✅ Пул соединений: активен")
     print(f"✅ Кэш: Redis/Memory")
+    print(f"✅ Репутация: включена")
     print("=" * 50)
     
     # Запускаем фоновые потоки
