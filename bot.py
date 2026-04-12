@@ -278,6 +278,46 @@ def check_forum_callback(call):
         )
 
 # ============================================
+# 🔥 ОБРАБОТЧИК КНОПОК РЕПУТАЦИИ (НОВОЕ)
+# ============================================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vote_'))
+def handle_reputation_vote(call):
+    """Обрабатывает нажатие на кнопки 👍 или 👎"""
+    user_id = call.from_user.id
+    callback_data = call.data
+    message = call.message
+    
+    print(f"🗳 Получен голос: {callback_data} от пользователя {user_id}")
+    
+    # Отправляем данные в API для обработки
+    try:
+        response = requests.post(
+            f'{API_URL}/reputation/vote',
+            json={
+                'callback_data': callback_data,
+                'message': {
+                    'message_id': message.message_id,
+                    'chat': {'id': user_id},
+                    'text': message.text,
+                    'reply_markup': message.reply_markup.to_dict() if message.reply_markup else None
+                }
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ Голос успешно обработан через API")
+            bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
+        else:
+            print(f"❌ Ошибка API: {response.status_code}")
+            bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
+            
+    except Exception as e:
+        print(f"❌ Ошибка отправки голоса: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка соединения")
+
+# ============================================
 # ЗАПУСК БОТА
 # ============================================
 if __name__ == '__main__':
@@ -288,6 +328,7 @@ if __name__ == '__main__':
     print("✅ Режим: с проверкой форума и кнопкой подтверждения")
     print("✅ Cache buster активен")
     print("✅ Повторные попытки при ошибках (3 раза)")
+    print("🔥 Репутация: обработчик vote_ добавлен")
     
     bot.remove_webhook()
     
