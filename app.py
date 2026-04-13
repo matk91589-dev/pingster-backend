@@ -1210,23 +1210,27 @@ def check_match():
             """, (player_id, best['player_id'], current['mode'], expires_at))
             match_id = cursor.fetchone()['id']
             
+            # 🔥 СОХРАНЯЕМ ДАННЫЕ ВТОРОГО ИГРОКА ДО УДАЛЕНИЯ ИЗ ОЧЕРЕДИ
+            opponent_data = {
+                "player_id": best['player_id'],
+                "nick": best['nick'],
+                "age": best['age'] or best['profile_age'],
+                "style": best['style'] or "fan",
+                "rating": best['rank'] if best['rank'] and best['rank'] != '0' else "0",
+                "steam_link": best.get('steam_link') or "Не указана",
+                "faceit_link": best.get('faceit_link') or "Не указана",
+                "avatar": best.get('avatar'),
+                "comment": best.get('comment') or "Нет комментария"
+            }
+            
+            # Теперь удаляем обоих из очереди
             cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
                           (player_id, best['player_id']))
             
             return jsonify({
                 "match_found": True,
                 "match_id": match_id,
-                "opponent": {
-                    "player_id": best['player_id'],
-                    "nick": best['nick'],
-                    "age": best['age'] or best['profile_age'],
-                    "style": best['style'],
-                    "rating": best['rank'],
-                    "steam_link": best.get('steam_link') or "Не указана",
-                    "faceit_link": best.get('faceit_link') or "Не указана",
-                    "avatar": best.get('avatar'),
-                    "comment": best.get('comment') or "Нет комментария"
-                },
+                "opponent": opponent_data,  # 🔥 ИСПОЛЬЗУЕМ СОХРАНЁННЫЕ ДАННЫЕ
                 "expires_at": expires_at.isoformat() + "Z"
             })
     except AppError:
