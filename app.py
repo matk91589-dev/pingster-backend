@@ -1124,7 +1124,10 @@ def check_match():
             
             # Проверяем, есть ли уже активный матч
             cursor.execute("""
-                SELECT id, player1_id, player2_id, expires_at, status
+                SELECT id, player1_id, player2_id, 
+                       player1_age, player1_rank, player1_style, player1_comment,
+                       player2_age, player2_rank, player2_style, player2_comment,
+                       expires_at, status
                 FROM matches
                 WHERE (player1_id = %s OR player2_id = %s)
                 AND status IN ('pending', 'accepted')
@@ -1135,28 +1138,21 @@ def check_match():
             
             if match:
                 other_id = match['player2_id'] if match['player1_id'] == player_id else match['player1_id']
+                is_player1 = (str(match['player1_id']) == str(player_id))
+                
                 profile = get_profile_cached(other_id)
                 if profile:
-                    # 🔥 Достаём ВСЕ данные второго игрока из search_queue
-                    cursor.execute("""
-                        SELECT rank, style, comment, steam_link, faceit_link 
-                        FROM search_queue 
-                        WHERE player_id = %s
-                    """, (other_id,))
-                    queue_data = cursor.fetchone()
-                    
-                    opponent_rank = "0"
-                    opponent_style = "fan"
-                    opponent_comment = "Нет комментария"
-                    opponent_steam = profile.get('steam_link') or "Не указана"
-                    opponent_faceit = profile.get('faceit_link') or "Не указана"
-                    
-                    if queue_data:
-                        opponent_rank = queue_data['rank'] if queue_data['rank'] and queue_data['rank'] != '0' else "0"
-                        opponent_style = queue_data['style'] or "fan"
-                        opponent_comment = queue_data['comment'] or "Нет комментария"
-                        opponent_steam = queue_data['steam_link'] or opponent_steam
-                        opponent_faceit = queue_data['faceit_link'] or opponent_faceit
+                    # 🔥 Берём данные из сохранённых колонок matches
+                    if is_player1:
+                        opponent_age = match['player2_age'] or profile['age'] or 0
+                        opponent_rank = match['player2_rank'] or "0"
+                        opponent_style = match['player2_style'] or "fan"
+                        opponent_comment = match['player2_comment'] or "Нет комментария"
+                    else:
+                        opponent_age = match['player1_age'] or profile['age'] or 0
+                        opponent_rank = match['player1_rank'] or "0"
+                        opponent_style = match['player1_style'] or "fan"
+                        opponent_comment = match['player1_comment'] or "Нет комментария"
                     
                     return jsonify({
                         "match_found": True,
@@ -1164,11 +1160,11 @@ def check_match():
                         "opponent": {
                             "player_id": other_id,
                             "nick": profile['nick'],
-                            "age": profile['age'],
+                            "age": opponent_age,
                             "style": opponent_style,
                             "rating": opponent_rank,
-                            "steam_link": opponent_steam,
-                            "faceit_link": opponent_faceit,
+                            "steam_link": profile.get('steam_link') or "Не указана",
+                            "faceit_link": profile.get('faceit_link') or "Не указана",
                             "avatar": profile.get('avatar'),
                             "comment": opponent_comment
                         },
@@ -1188,9 +1184,8 @@ def check_match():
             
             min_bucket, max_bucket = get_range_buckets(current['mode'], current['style'], current['rating_bucket'])
             
-            # 🔥 ВЫБИРАЕМ ВСЕ ПОЛЯ, ВКЛЮЧАЯ comment
             query = """
-                SELECT sq.*, p.nick, p.steam_link, p.faceit_link, p.avatar, p.age as profile_age
+                SELECT sq.*, p.nick, p.avatar
                 FROM search_queue sq
                 JOIN profiles p ON sq.player_id = p.player_id
                 WHERE sq.mode = %s 
@@ -1218,7 +1213,7 @@ def check_match():
                 }
                 cand_data = {
                     'rank': cand['rank'],
-                    'age': cand['age'] or cand['profile_age']
+                    'age': cand['age']
                 }
                 score = calculate_score(player_data, cand_data, current['mode'])
                 candidates_list.append((score, cand))
@@ -1227,18 +1222,30 @@ def check_match():
             best = candidates_list[0][1]
             
             expires_at = datetime.utcnow() + timedelta(seconds=30)
+            
+            # 🔥 СОХРАНЯЕМ ВСЕ ДАННЫЕ ОБОИХ ИГРОКОВ В MATCHES
             cursor.execute("""
-                INSERT INTO matches (player1_id, player2_id, mode, created_at, expires_at, status)
-                VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'), %s, 'pending')
+                INSERT INTO matches (
+                    player1_id, player2_id, mode,
+                    player1_age, player1_rank, player1_style, player1_comment,
+                    player2_age, player2_rank, player2_style, player2_comment,
+                    created_at, expires_at, status
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'), %s, 'pending')
                 RETURNING id
-            """, (player_id, best['player_id'], current['mode'], expires_at))
+            """, (
+                player_id, best['player_id'], current['mode'],
+                current['age'], current['rank'], current['style'] or 'fan', current.get('comment') or '',
+                best['age'], best['rank'], best['style'] or 'fan', best.get('comment') or '',
+                expires_at
+            ))
             match_id = cursor.fetchone()['id']
             
-            # 🔥 СОХРАНЯЕМ ВСЕ ДАННЫЕ ВТОРОГО ИГРОКА ДО УДАЛЕНИЯ ИЗ ОЧЕРЕДИ
+            # 🔥 ДАННЫЕ ДЛЯ ОТВЕТА (первый игрок видит второго)
             opponent_data = {
                 "player_id": best['player_id'],
                 "nick": best['nick'],
-                "age": best['age'] or best['profile_age'],
+                "age": best['age'] or 0,
                 "style": best['style'] or "fan",
                 "rating": best['rank'] if best['rank'] and best['rank'] != '0' else "0",
                 "steam_link": best.get('steam_link') or "Не указана",
@@ -1247,7 +1254,7 @@ def check_match():
                 "comment": best.get('comment') or "Нет комментария"
             }
             
-            # Теперь удаляем обоих из очереди
+            # Удаляем обоих из очереди
             cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
                           (player_id, best['player_id']))
             
