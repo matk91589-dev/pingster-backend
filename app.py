@@ -1122,6 +1122,7 @@ def check_match():
             lock_key = hash(player_id) % 2**31
             cursor.execute("SELECT pg_try_advisory_xact_lock(%s)", (lock_key,))
             
+            # Проверяем, есть ли уже активный матч
             cursor.execute("""
                 SELECT id, player1_id, player2_id, expires_at, status
                 FROM matches
@@ -1136,6 +1137,27 @@ def check_match():
                 other_id = match['player2_id'] if match['player1_id'] == player_id else match['player1_id']
                 profile = get_profile_cached(other_id)
                 if profile:
+                    # 🔥 Достаём ВСЕ данные второго игрока из search_queue
+                    cursor.execute("""
+                        SELECT rank, style, comment, steam_link, faceit_link 
+                        FROM search_queue 
+                        WHERE player_id = %s
+                    """, (other_id,))
+                    queue_data = cursor.fetchone()
+                    
+                    opponent_rank = "0"
+                    opponent_style = "fan"
+                    opponent_comment = "Нет комментария"
+                    opponent_steam = profile.get('steam_link') or "Не указана"
+                    opponent_faceit = profile.get('faceit_link') or "Не указана"
+                    
+                    if queue_data:
+                        opponent_rank = queue_data['rank'] if queue_data['rank'] and queue_data['rank'] != '0' else "0"
+                        opponent_style = queue_data['style'] or "fan"
+                        opponent_comment = queue_data['comment'] or "Нет комментария"
+                        opponent_steam = queue_data['steam_link'] or opponent_steam
+                        opponent_faceit = queue_data['faceit_link'] or opponent_faceit
+                    
                     return jsonify({
                         "match_found": True,
                         "match_id": match['id'],
@@ -1143,16 +1165,17 @@ def check_match():
                             "player_id": other_id,
                             "nick": profile['nick'],
                             "age": profile['age'],
-                            "style": "fan",
-                            "rating": "0",
-                            "steam_link": profile.get('steam_link') or "Не указана",
-                            "faceit_link": profile.get('faceit_link') or "Не указана",
+                            "style": opponent_style,
+                            "rating": opponent_rank,
+                            "steam_link": opponent_steam,
+                            "faceit_link": opponent_faceit,
                             "avatar": profile.get('avatar'),
-                            "comment": "Нет комментария"
+                            "comment": opponent_comment
                         },
                         "expires_at": match['expires_at'].isoformat() + "Z"
                     })
             
+            # Ищем текущего игрока в очереди
             cursor.execute("""
                 SELECT * FROM search_queue 
                 WHERE player_id = %s AND expires_at > (NOW() AT TIME ZONE 'UTC')
@@ -1165,6 +1188,7 @@ def check_match():
             
             min_bucket, max_bucket = get_range_buckets(current['mode'], current['style'], current['rating_bucket'])
             
+            # 🔥 ВЫБИРАЕМ ВСЕ ПОЛЯ, ВКЛЮЧАЯ comment
             query = """
                 SELECT sq.*, p.nick, p.steam_link, p.faceit_link, p.avatar, p.age as profile_age
                 FROM search_queue sq
@@ -1210,7 +1234,7 @@ def check_match():
             """, (player_id, best['player_id'], current['mode'], expires_at))
             match_id = cursor.fetchone()['id']
             
-            # 🔥 СОХРАНЯЕМ ДАННЫЕ ВТОРОГО ИГРОКА ДО УДАЛЕНИЯ ИЗ ОЧЕРЕДИ
+            # 🔥 СОХРАНЯЕМ ВСЕ ДАННЫЕ ВТОРОГО ИГРОКА ДО УДАЛЕНИЯ ИЗ ОЧЕРЕДИ
             opponent_data = {
                 "player_id": best['player_id'],
                 "nick": best['nick'],
@@ -1230,7 +1254,7 @@ def check_match():
             return jsonify({
                 "match_found": True,
                 "match_id": match_id,
-                "opponent": opponent_data,  # 🔥 ИСПОЛЬЗУЕМ СОХРАНЁННЫЕ ДАННЫЕ
+                "opponent": opponent_data,
                 "expires_at": expires_at.isoformat() + "Z"
             })
     except AppError:
