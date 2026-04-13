@@ -777,6 +777,30 @@ def daily_bonus():
         logger.error(f"Ошибка daily_bonus: {e}")
         raise AppError(str(e), 500)
 
+# ---------- РЕЙТИНГ ПОЛЬЗОВАТЕЛЯ ----------
+@app.route('/api/user/rating', methods=['POST'])
+@rate_limit(limit=30, window=60)
+def get_user_rating():
+    try:
+        data = request.json
+        if not data or 'telegram_id' not in data:
+            raise ValidationError("Missing telegram_id")
+        
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT COALESCE(rating, 0) as rating
+                FROM users WHERE telegram_id = %s
+            """, (data['telegram_id'],))
+            result = cursor.fetchone()
+            
+            if result:
+                return jsonify({"status": "ok", "rating": result['rating']})
+            else:
+                return jsonify({"status": "ok", "rating": 0})
+    except Exception as e:
+        logger.error(f"Ошибка get_user_rating: {e}")
+        return jsonify({"status": "error"}), 500
+
 # ---------- ПРОФИЛЬ ----------
 @app.route('/api/profile/get', methods=['POST'])
 @rate_limit()
@@ -1142,6 +1166,11 @@ def check_match():
                 
                 profile = get_profile_cached(other_id)
                 if profile:
+                    # 🔥 Получаем репутацию (trust_rating) из users
+                    cursor.execute("SELECT COALESCE(rating, 0) as trust_rating FROM users WHERE player_id = %s", (other_id,))
+                    trust_data = cursor.fetchone()
+                    trust_rating = trust_data['trust_rating'] if trust_data else 0
+                    
                     # 🔥 Берём данные из сохранённых колонок matches
                     if is_player1:
                         opponent_age = match['player2_age'] or profile['age'] or 0
@@ -1163,6 +1192,7 @@ def check_match():
                             "age": opponent_age,
                             "style": opponent_style,
                             "rating": opponent_rank,
+                            "trust_rating": trust_rating,  # 🔥 РЕПУТАЦИЯ
                             "steam_link": profile.get('steam_link') or "Не указана",
                             "faceit_link": profile.get('faceit_link') or "Не указана",
                             "avatar": profile.get('avatar'),
@@ -1241,6 +1271,11 @@ def check_match():
             ))
             match_id = cursor.fetchone()['id']
             
+            # 🔥 Получаем репутацию второго игрока
+            cursor.execute("SELECT COALESCE(rating, 0) FROM users WHERE player_id = %s", (best['player_id'],))
+            trust_data = cursor.fetchone()
+            trust_rating = trust_data[0] if trust_data else 0
+            
             # 🔥 ДАННЫЕ ДЛЯ ОТВЕТА (первый игрок видит второго)
             opponent_data = {
                 "player_id": best['player_id'],
@@ -1248,6 +1283,7 @@ def check_match():
                 "age": best['age'] or 0,
                 "style": best['style'] or "fan",
                 "rating": best['rank'] if best['rank'] and best['rank'] != '0' else "0",
+                "trust_rating": trust_rating,  # 🔥 РЕПУТАЦИЯ
                 "steam_link": best.get('steam_link') or "Не указана",
                 "faceit_link": best.get('faceit_link') or "Не указана",
                 "avatar": best.get('avatar'),
