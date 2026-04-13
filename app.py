@@ -1070,10 +1070,12 @@ def start_search():
             if mode in ['faceit', 'premier']:
                 try:
                     rating_number = int(rank_value)
-                    if rating_number < 0 or rating_number > 4000:
+                    max_rating = 5000 if mode == 'faceit' else 40000
+                    if rating_number < 0 or rating_number > max_rating:
                         raise ValueError
                 except ValueError:
-                    raise ValidationError("Invalid rating value", ["rating_value must be between 0-4000"])
+                    error_msg = f"rating_value must be between 0-{max_rating}"
+                    raise ValidationError("Invalid rating value", [error_msg])
             else:
                 if rank_value not in RANK_TO_VALUE:
                     raise ValidationError("Invalid rank", ["rank must be valid CS2 rank"])
