@@ -39,7 +39,6 @@ temp_messages = {}
 # ============================================
 
 def api_request_with_retry(url, json_data, max_retries=3, delay=2):
-    headers = {'ngrok-skip-browser-warning': 'true'}
     """Выполняет запрос к API с повторными попытками при ошибке"""
     for attempt in range(max_retries):
         try:
