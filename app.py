@@ -175,7 +175,15 @@ def init_db_pool():
 def get_db_connection():
     if not db_pool:
         raise AppError("Database pool not initialized", 500, "DB_POOL_ERROR")
-    return db_pool.getconn()
+    try:
+        conn = db_pool.getconn()
+        # Проверяем что соединение живое
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return conn
+    except Exception as e:
+        logger.error(f"Ошибка получения соединения: {e}")
+        raise
 
 def put_db_connection(conn):
     if db_pool:
@@ -187,6 +195,9 @@ def get_db_cursor():
     cursor = None
     try:
         conn = get_db_connection()
+        # Проверяем что соединение живое
+        with conn.cursor() as test_cursor:
+            test_cursor.execute("SELECT 1")
         cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         yield cursor
         conn.commit()
@@ -199,7 +210,11 @@ def get_db_cursor():
         if cursor:
             cursor.close()
         if conn:
-            put_db_connection(conn)
+            try:
+                db_pool.putconn(conn)
+                logger.debug("Соединение возвращено в пул")
+            except Exception as e:
+                logger.error(f"Ошибка при возврате соединения: {e}")
 
 # ============================================
 # REDIS КЭШ (опционально)
@@ -1116,6 +1131,8 @@ def start_search():
                 data.get('style', 'fan'), data.get('age'),
                 data.get('steam_link'), data.get('faceit_link'), data.get('comment')
             ))
+
+        logger.info(f"✅ Поиск добавлен: player_id={player_id}, steam={data.get('steam_link')}, faceit={data.get('faceit_link')}, style={data.get('style')}")
         
         return jsonify({
             "status": "searching",
