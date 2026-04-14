@@ -1261,7 +1261,7 @@ def check_match():
             
             logger.info(f"📋 Текущий игрок в очереди: style={current['style']}, steam={current.get('steam_link')}")
             
-            min_bucket, max_bucket = get_range_buckets(current['mode'], current['style'], current['rating_bucket'])
+            min_bucket, max_bucket = None, None  # Временно отключаем фильтр по бакетам
             
             query = """
                 SELECT sq.*, p.nick, p.avatar
