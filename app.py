@@ -1146,11 +1146,11 @@ def check_match():
             lock_key = hash(player_id) % 2**31
             cursor.execute("SELECT pg_try_advisory_xact_lock(%s)", (lock_key,))
             
-            # Проверяем, есть ли уже активный матч
+            # Проверяем, есть ли уже активный матч (возвращаем ВСЕ колонки, включая ссылки)
             cursor.execute("""
-                SELECT id, player1_id, player2_id, 
-                       player1_age, player1_rank, player1_style, player1_comment,
-                       player2_age, player2_rank, player2_style, player2_comment,
+                SELECT id, player1_id, player2_id, mode,
+                       player1_age, player1_rank, player1_style, player1_comment, player1_steam_link, player1_faceit_link,
+                       player2_age, player2_rank, player2_style, player2_comment, player2_steam_link, player2_faceit_link,
                        expires_at, status
                 FROM matches
                 WHERE (player1_id = %s OR player2_id = %s)
@@ -1166,22 +1166,28 @@ def check_match():
                 
                 profile = get_profile_cached(other_id)
                 if profile:
-                    # 🔥 Получаем репутацию (trust_rating) из users
+                    # Получаем репутацию
                     cursor.execute("SELECT COALESCE(rating, 0) as trust_rating FROM users WHERE player_id = %s", (other_id,))
                     trust_data = cursor.fetchone()
                     trust_rating = trust_data['trust_rating'] if trust_data else 0
                     
-                    # 🔥 Берём данные из сохранённых колонок matches
+                    # Берём данные из матча (то что вводил пользователь при поиске)
                     if is_player1:
                         opponent_age = match['player2_age'] or profile['age'] or 0
                         opponent_rank = match['player2_rank'] or "0"
                         opponent_style = match['player2_style'] or "fan"
                         opponent_comment = match['player2_comment'] or "Нет комментария"
+                        # 🔥 ССЫЛКИ ИЗ МАТЧА, ЕСЛИ НЕТ - ИЗ ПРОФИЛЯ
+                        opponent_steam_link = match.get('player2_steam_link') or profile.get('steam_link') or "Не указана"
+                        opponent_faceit_link = match.get('player2_faceit_link') or profile.get('faceit_link') or "Не указана"
                     else:
                         opponent_age = match['player1_age'] or profile['age'] or 0
                         opponent_rank = match['player1_rank'] or "0"
                         opponent_style = match['player1_style'] or "fan"
                         opponent_comment = match['player1_comment'] or "Нет комментария"
+                        # 🔥 ССЫЛКИ ИЗ МАТЧА, ЕСЛИ НЕТ - ИЗ ПРОФИЛЯ
+                        opponent_steam_link = match.get('player1_steam_link') or profile.get('steam_link') or "Не указана"
+                        opponent_faceit_link = match.get('player1_faceit_link') or profile.get('faceit_link') or "Не указана"
                     
                     return jsonify({
                         "match_found": True,
@@ -1192,9 +1198,9 @@ def check_match():
                             "age": opponent_age,
                             "style": opponent_style,
                             "rating": opponent_rank,
-                            "trust_rating": trust_rating,  # 🔥 РЕПУТАЦИЯ
-                            "steam_link": profile.get('steam_link') or "Не указана",
-                            "faceit_link": profile.get('faceit_link') or "Не указана",
+                            "trust_rating": trust_rating,
+                            "steam_link": opponent_steam_link,
+                            "faceit_link": opponent_faceit_link,
                             "avatar": profile.get('avatar'),
                             "comment": opponent_comment
                         },
@@ -1253,6 +1259,7 @@ def check_match():
             
             expires_at = datetime.utcnow() + timedelta(seconds=30)
             
+            # Сохраняем матч со всеми данными, включая ссылки
             cursor.execute("""
                 INSERT INTO matches (
                     player1_id, player2_id, mode,
@@ -1261,7 +1268,7 @@ def check_match():
                     created_at, expires_at, status
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'), %s, 'pending')
-            RETURNING id
+                RETURNING id
             """, (
                 player_id, best['player_id'], current['mode'],
                 current['age'], current['rank'], current['style'] or 'fan', current.get('comment') or '',
@@ -1272,19 +1279,19 @@ def check_match():
             ))
             match_id = cursor.fetchone()['id']
             
-            # 🔥 Получаем репутацию второго игрока
+            # Получаем репутацию второго игрока
             cursor.execute("SELECT COALESCE(rating, 0) FROM users WHERE player_id = %s", (best['player_id'],))
             trust_data = cursor.fetchone()
             trust_rating = trust_data[0] if trust_data else 0
             
-            # 🔥 ДАННЫЕ ДЛЯ ОТВЕТА (первый игрок видит второго)
+            # Данные для ответа (берём ссылки из очереди, которые только что сохранили)
             opponent_data = {
                 "player_id": best['player_id'],
                 "nick": best['nick'],
                 "age": best['age'] or 0,
                 "style": best['style'] or "fan",
                 "rating": best['rank'] if best['rank'] and best['rank'] != '0' else "0",
-                "trust_rating": trust_rating,  # 🔥 РЕПУТАЦИЯ
+                "trust_rating": trust_rating,
                 "steam_link": best.get('steam_link') or "Не указана",
                 "faceit_link": best.get('faceit_link') or "Не указана",
                 "avatar": best.get('avatar'),
