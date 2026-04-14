@@ -1153,17 +1153,21 @@ def check_match():
         if not data or 'telegram_id' not in data:
             raise ValidationError("Missing telegram_id", ["telegram_id is required"])
         
+        logger.info(f"🔍 check_match для telegram_id={data['telegram_id']}")
+        
         update_user_activity(data['telegram_id'])
         
         player_id = get_player_id(data['telegram_id'])
         if not player_id:
             raise NotFoundError("User not found")
         
+        logger.info(f"🔍 player_id={player_id}")
+        
         with get_db_cursor() as cursor:
             lock_key = hash(player_id) % 2**31
             cursor.execute("SELECT pg_try_advisory_xact_lock(%s)", (lock_key,))
             
-            # Проверяем, есть ли уже активный матч (возвращаем ВСЕ колонки, включая ссылки)
+            # Проверяем, есть ли уже активный матч
             cursor.execute("""
                 SELECT id, player1_id, player2_id, mode,
                        player1_age, player1_rank, player1_style, player1_comment, player1_steam_link, player1_faceit_link,
@@ -1175,9 +1179,13 @@ def check_match():
                 AND expires_at > (NOW() AT TIME ZONE 'UTC')
                 ORDER BY id DESC LIMIT 1
             """, (player_id, player_id))
+            
             match = cursor.fetchone()
             
             if match:
+                logger.info(f"📋 Найден существующий матч id={match['id']}")
+                logger.info(f"📋 player1_steam={match.get('player1_steam_link')}, player2_steam={match.get('player2_steam_link')}")
+                
                 other_id = match['player2_id'] if match['player1_id'] == player_id else match['player1_id']
                 is_player1 = (str(match['player1_id']) == str(player_id))
                 
@@ -1188,23 +1196,23 @@ def check_match():
                     trust_data = cursor.fetchone()
                     trust_rating = trust_data['trust_rating'] if trust_data else 0
                     
-                    # Берём данные из матча (то что вводил пользователь при поиске)
+                    # Берём данные из матча
                     if is_player1:
                         opponent_age = match['player2_age'] or profile['age'] or 0
                         opponent_rank = match['player2_rank'] or "0"
                         opponent_style = match['player2_style'] or "fan"
                         opponent_comment = match['player2_comment'] or "Нет комментария"
-                        # 🔥 ССЫЛКИ ИЗ МАТЧА, ЕСЛИ НЕТ - ИЗ ПРОФИЛЯ
                         opponent_steam_link = match.get('player2_steam_link') or profile.get('steam_link') or "Не указана"
                         opponent_faceit_link = match.get('player2_faceit_link') or profile.get('faceit_link') or "Не указана"
+                        logger.info(f"📋 opponent_steam из player2: {opponent_steam_link}")
                     else:
                         opponent_age = match['player1_age'] or profile['age'] or 0
                         opponent_rank = match['player1_rank'] or "0"
                         opponent_style = match['player1_style'] or "fan"
                         opponent_comment = match['player1_comment'] or "Нет комментария"
-                        # 🔥 ССЫЛКИ ИЗ МАТЧА, ЕСЛИ НЕТ - ИЗ ПРОФИЛЯ
                         opponent_steam_link = match.get('player1_steam_link') or profile.get('steam_link') or "Не указана"
                         opponent_faceit_link = match.get('player1_faceit_link') or profile.get('faceit_link') or "Не указана"
+                        logger.info(f"📋 opponent_steam из player1: {opponent_steam_link}")
                     
                     return jsonify({
                         "match_found": True,
@@ -1233,7 +1241,10 @@ def check_match():
             current = cursor.fetchone()
             
             if not current:
+                logger.info("❌ Игрок не в очереди")
                 return jsonify({"match_found": False})
+            
+            logger.info(f"📋 Текущий игрок в очереди: style={current['style']}, steam={current.get('steam_link')}")
             
             min_bucket, max_bucket = get_range_buckets(current['mode'], current['style'], current['rating_bucket'])
             
@@ -1256,6 +1267,7 @@ def check_match():
             candidates = cursor.fetchall()
             
             if not candidates:
+                logger.info("❌ Кандидатов не найдено")
                 return jsonify({"match_found": False})
             
             candidates_list = []
@@ -1274,9 +1286,11 @@ def check_match():
             candidates_list.sort(key=lambda x: x[0])
             best = candidates_list[0][1]
             
+            logger.info(f"✅ Найден кандидат: player_id={best['player_id']}, steam={best.get('steam_link')}, style={best.get('style')}")
+            
             expires_at = datetime.utcnow() + timedelta(seconds=30)
             
-            # Сохраняем матч со всеми данными, включая ссылки
+            # Сохраняем матч
             cursor.execute("""
                 INSERT INTO matches (
                     player1_id, player2_id, mode,
@@ -1296,12 +1310,14 @@ def check_match():
             ))
             match_id = cursor.fetchone()['id']
             
+            logger.info(f"✅ Матч создан: id={match_id}")
+            
             # Получаем репутацию второго игрока
             cursor.execute("SELECT COALESCE(rating, 0) FROM users WHERE player_id = %s", (best['player_id'],))
             trust_data = cursor.fetchone()
             trust_rating = trust_data[0] if trust_data else 0
             
-            # Данные для ответа (берём ссылки из очереди, которые только что сохранили)
+            # Данные для ответа
             opponent_data = {
                 "player_id": best['player_id'],
                 "nick": best['nick'],
@@ -1314,6 +1330,8 @@ def check_match():
                 "avatar": best.get('avatar'),
                 "comment": best.get('comment') or "Нет комментария"
             }
+            
+            logger.info(f"📤 Отправляем оппонента: steam={opponent_data['steam_link']}, style={opponent_data['style']}")
             
             # Удаляем обоих из очереди
             cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
