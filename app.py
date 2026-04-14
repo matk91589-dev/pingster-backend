@@ -1253,20 +1253,21 @@ def check_match():
             
             expires_at = datetime.utcnow() + timedelta(seconds=30)
             
-            # 🔥 СОХРАНЯЕМ ВСЕ ДАННЫЕ ОБОИХ ИГРОКОВ В MATCHES
             cursor.execute("""
                 INSERT INTO matches (
                     player1_id, player2_id, mode,
-                    player1_age, player1_rank, player1_style, player1_comment,
-                    player2_age, player2_rank, player2_style, player2_comment,
+                    player1_age, player1_rank, player1_style, player1_comment, player1_steam_link, player1_faceit_link,
+                    player2_age, player2_rank, player2_style, player2_comment, player2_steam_link, player2_faceit_link,
                     created_at, expires_at, status
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'), %s, 'pending')
-                RETURNING id
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'), %s, 'pending')
+            RETURNING id
             """, (
                 player_id, best['player_id'], current['mode'],
                 current['age'], current['rank'], current['style'] or 'fan', current.get('comment') or '',
+                current.get('steam_link'), current.get('faceit_link'),
                 best['age'], best['rank'], best['style'] or 'fan', best.get('comment') or '',
+                best.get('steam_link'), best.get('faceit_link'),
                 expires_at
             ))
             match_id = cursor.fetchone()['id']
@@ -2187,22 +2188,64 @@ def reputation_vote():
         message_id = message.get('message_id')
         
         # Парсим callback_data: vote_up_12345_42 или vote_down_12345_42
+        # Формат: vote_{up/down}_{voter_telegram_id}_{match_id}
         parts = callback_data.split('_')
         if len(parts) != 4:
             return jsonify({"status": "error", "message": "Invalid callback_data"}), 400
         
         vote_type = parts[1]  # up или down
-        teammate_telegram_id = parts[2]
+        voter_telegram_id = parts[2]  # 👈 ТОТ, КТО ГОЛОСУЕТ
         match_id = parts[3]
         
-        # Обновляем репутацию (rating)
+        # 🔥 НАХОДИМ ТИММЕЙТА (того, КОМУ ставим оценку)
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT player1_id, player2_id 
+                FROM matches 
+                WHERE id = %s
+            """, (match_id,))
+            match = cursor.fetchone()
+            
+            if not match:
+                return jsonify({"status": "error", "message": "Match not found"}), 404
+            
+            # Находим telegram_id тиммейта (не голосующего)
+            cursor.execute("""
+                SELECT telegram_id FROM users WHERE player_id IN (%s, %s)
+            """, (match['player1_id'], match['player2_id']))
+            players = cursor.fetchall()
+            
+            player_ids = [str(p[0]) for p in players]
+            
+            if voter_telegram_id not in player_ids:
+                return jsonify({"status": "error", "message": "User not in match"}), 403
+            
+            # Берем другого игрока (тиммейта)
+            teammate_telegram_id = player_ids[0] if player_ids[1] == voter_telegram_id else player_ids[1]
+        
+        # Обновляем репутацию (rating) ТИММЕЙТА
         delta = 1 if vote_type == 'up' else -1
         update_reputation(teammate_telegram_id, delta)
+        
+        logger.info(f"✅ Голос: {vote_type} | voter={voter_telegram_id} | target={teammate_telegram_id} | delta={delta}")
         
         # Обновляем сообщение в боте (убираем кнопки, показываем оценку)
         if chat_id and message_id:
             vote_emoji = "👍" if vote_type == 'up' else "👎"
-            new_text = message.get('text', '').replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_emoji}')
+            new_text = message.get('text', '').replace('Оцените тиммейта:', f'✅ Вы оценили тиммейта: {vote_emoji}')
+            
+            # Получаем ссылку на чат из старого сообщения
+            chat_link = None
+            if message.get('reply_markup') and message['reply_markup'].get('inline_keyboard'):
+                for row in message['reply_markup']['inline_keyboard']:
+                    for btn in row:
+                        if btn.get('url'):
+                            chat_link = btn['url']
+                            break
+            
+            new_keyboard = {"inline_keyboard": []}
+            if chat_link:
+                new_keyboard["inline_keyboard"].append([{"text": "👉 Перейти в чат", "url": chat_link}])
             
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
@@ -2210,11 +2253,7 @@ def reputation_vote():
                     "chat_id": chat_id,
                     "message_id": message_id,
                     "text": new_text,
-                    "reply_markup": {
-                        "inline_keyboard": [
-                            [{"text": "👉 Перейти в чат", "url": message['reply_markup']['inline_keyboard'][0][0]['url']}]
-                        ]
-                    }
+                    "reply_markup": new_keyboard if new_keyboard["inline_keyboard"] else None
                 },
                 timeout=5
             )
@@ -2224,7 +2263,6 @@ def reputation_vote():
     except Exception as e:
         logger.error(f"Ошибка reputation_vote: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
 # ============================================
 # GRACEFUL SHUTDOWN
 # ============================================
