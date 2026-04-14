@@ -23,6 +23,10 @@ from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from dotenv import load_dotenv
 
+# В самом начале, после load_dotenv(), добавь:
+os.environ['PGSSLMODE'] = 'require'
+os.environ['PGCONNECT_TIMEOUT'] = '30'
+
 # Загрузка переменных окружения
 load_dotenv()
 
@@ -154,9 +158,13 @@ def init_db_pool():
             user=DB_USER,
             password=DB_PASSWORD,
             port=DB_PORT,
-            connect_timeout=10
+            connect_timeout=30,
+            keepalives=1,
+            keepalives_idle=5,
+            keepalives_interval=2,
+            keepalives_count=2
         )
-        logger.info(f"✅ Пул соединений создан (min=2, max=15)")
+        logger.info(f"✅ Пул соединений создан (min=2, max=15) с keepalive")
         
         # Проверяем пул при старте
         try:
@@ -205,6 +213,13 @@ def get_db_cursor():
         if conn:
             conn.rollback()
         logger.error(f"Database error: {e}")
+        # Если SSL ошибка - пробуем переподключиться
+        if "SSL connection has been closed" in str(e) or "connection already closed" in str(e):
+            logger.info("🔄 Переподключение к БД...")
+            if db_pool:
+                db_pool.closeall()
+                time.sleep(1)
+                init_db_pool()
         raise
     finally:
         if cursor:
