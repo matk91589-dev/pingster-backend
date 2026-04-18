@@ -1460,9 +1460,19 @@ def respond_match():
                     logger.info(f"⏭️ Пользователи {player1_id} и {player2_id} уже в друзьях")
                 
                 return jsonify({"status": "accepted", "both_accepted": True})
+                
             elif r1 == 'reject' or r2 == 'reject':
+                # Удаляем матч
                 cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
+                
+                # 🔥 УДАЛЯЕМ ОБОИХ ИГРОКОВ ИЗ ОЧЕРЕДИ ПОИСКА
+                cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
+                               (match['player1_id'], match['player2_id']))
+                
+                logger.info(f"❌ Матч {data['match_id']} отклонён. Игроки {match['player1_id']} и {match['player2_id']} удалены из очереди.")
+                
                 return jsonify({"status": "rejected", "both_accepted": False})
+                
             else:
                 time_left = max(0, int((match['expires_at'] - datetime.utcnow()).total_seconds()))
                 return jsonify({
@@ -1475,7 +1485,7 @@ def respond_match():
     except Exception as e:
         logger.error(f"Ошибка respond_match: {e}")
         raise AppError(str(e), 500, "INTERNAL_ERROR")
-
+        
 @app.route('/api/search/stop', methods=['POST'])
 @rate_limit(limit=10, window=60)
 def stop_search():
