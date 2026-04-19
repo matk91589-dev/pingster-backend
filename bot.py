@@ -3,7 +3,7 @@ import requests
 import random
 import time
 import os
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, MenuButtonWebApp, WebAppInfo
 from dotenv import load_dotenv
 
 # Загрузка переменных окружения из .env файла
@@ -12,22 +12,15 @@ load_dotenv()
 # ============================================
 # КОНФИГУРАЦИЯ ИЗ .env
 # ============================================
-# Токен бота (теперь в .env)
 TOKEN = os.getenv('BOT_TOKEN')
-
-# URL API (БЭКЕНД)
 API_URL = os.getenv('API_URL', 'https://matk91589-dev-pingster-backend-cee8.twc1.net/api')
-
-# URL фронтенда (ФРОНТЕНД)
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://matk91589-dev-pinster-0530.twc1.net')
-
-# ID форума
 FORUM_USERNAME = os.getenv('FORUM_USERNAME', 'pingster_team')
 FORUM_LINK = os.getenv('FORUM_LINK', 'https://t.me/pingster_team')
+SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', 'pingster_support')
 
-# Проверка наличия токена
 if not TOKEN:
-    raise ValueError("❌ BOT_TOKEN не найден в .env файле! Создай .env с BOT_TOKEN=твой_токен")
+    raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -71,7 +64,6 @@ def is_user_in_forum(user_id):
                 timeout=10
             )
             data = response.json()
-            print(f"📡 Проверка форума для {user_id}: {data}")
             
             if data.get('ok'):
                 status = data['result']['status']
@@ -87,43 +79,30 @@ def is_user_in_forum(user_id):
 def save_temp_message(user_id, message_id):
     """Сохраняет ID временного сообщения"""
     temp_messages[user_id] = message_id
-    print(f"💾 Сохранено временное сообщение для {user_id}: {message_id}")
 
 def delete_temp_message(user_id):
     """Удаляет временное сообщение"""
     if user_id in temp_messages:
         try:
             bot.delete_message(user_id, temp_messages[user_id])
-            print(f"🗑 Удалено сообщение для {user_id}")
-        except Exception as e:
-            print(f"❌ Ошибка удаления: {e}")
+        except:
+            pass
         del temp_messages[user_id]
 
 def send_main_menu(user_id, player_id=None):
-    """Отправляет главное меню с кнопкой Mini App"""
-    markup = InlineKeyboardMarkup()
-    
-    cache_buster = int(time.time())
-    
-    web_app_button = InlineKeyboardButton(
-        text="🚀 Открыть Pingster",
-        web_app=telebot.types.WebAppInfo(
-            url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={user_id}'
-        )
-    )
-    markup.add(web_app_button)
-    
+    """Отправляет главное меню с инструкцией"""
     text = f"🎮 **Добро пожаловать в Pingster!**\n\n"
     if player_id:
         text += f"👤 Твой игровой ID: `{player_id}`\n"
-    text += f"⭐ Твоя репутация: **0**\n\n"
-    text += f"👇 Нажми кнопку ниже, чтобы открыть Mini App:"
+    text += f"\n👇 **Нажми кнопку «Запустить» в меню слева от ввода сообщения**\n\n"
+    text += f"Или используй команды:\n"
+    text += f"/start — главное меню\n"
+    text += f"/support — связаться с поддержкой"
     
     bot.send_message(
         user_id,
         text,
-        parse_mode='Markdown',
-        reply_markup=markup
+        parse_mode='Markdown'
     )
 
 def send_forum_invite(user_id):
@@ -148,12 +127,38 @@ def send_forum_invite(user_id):
         "Для начала пользования нужно вступить в наш форум.\n\n"
         "**1️⃣ Нажми кнопку «Вступить в форум»**\n"
         "**2️⃣ Нажми «Я вступил, продолжить»**\n\n"
-        "После этого откроется главное меню 🔥",
+        "После этого появится кнопка запуска в меню 🔥",
         parse_mode='Markdown',
         reply_markup=markup
     )
     
     save_temp_message(user_id, msg.message_id)
+
+def setup_bot_menu():
+    """Настраивает кнопку запуска в меню бота (слева от ввода)"""
+    try:
+        # Устанавливаем кнопку WebApp в меню
+        cache_buster = int(time.time())
+        web_app_url = f'{FRONTEND_URL}/?v={cache_buster}'
+        
+        bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="🚀 Запустить",
+                web_app=WebAppInfo(url=web_app_url)
+            )
+        )
+        print(f"✅ Кнопка «Запустить» установлена в меню")
+        
+        # Устанавливаем команды
+        commands = [
+            BotCommand("start", "Главное меню"),
+            BotCommand("support", "Поддержка")
+        ]
+        bot.set_my_commands(commands)
+        print(f"✅ Команды установлены: /start, /support")
+        
+    except Exception as e:
+        print(f"❌ Ошибка настройки меню: {e}")
 
 # ============================================
 # ОБРАБОТЧИКИ КОМАНД
@@ -164,20 +169,17 @@ def start(message):
     telegram_id = message.from_user.id
     username = message.from_user.username or 'no_username'
     
-    print(f"👉 Получен /start от {username} (ID: {telegram_id})")
-    print(f"📡 API URL: {API_URL}")
-    print(f"🌐 FRONTEND URL: {FRONTEND_URL}")
+    print(f"👉 /start от {username} (ID: {telegram_id})")
     
-    # ШАГ 1: Проверяем, есть ли юзер в форуме
+    # Проверяем, есть ли юзер в форуме
     if not is_user_in_forum(telegram_id):
         print(f"🟡 Новичок {telegram_id} — отправляем приглашение в форум")
         send_forum_invite(telegram_id)
         return
     
-    # 🟢 СТАРЫЙ ЮЗЕР — продолжаем как обычно
+    # Старый юзер — отправляем главное меню
     print(f"🟢 Старый юзер {telegram_id} — отправляем главное меню")
     
-    # Используем запрос с повторами
     response = api_request_with_retry(
         f'{API_URL}/user/init',
         {'telegram_id': telegram_id, 'username': username},
@@ -192,50 +194,37 @@ def start(message):
         else:
             bot.reply_to(message, "❌ Ошибка при регистрации")
     else:
-        # Если API не ответил после всех попыток
         bot.reply_to(
             message, 
-            "⚠️ Сервер временно недоступен. Пожалуйста, попробуй через 10 секунд.\n\nЕсли проблема повторяется, напиши @pingster_support"
+            f"⚠️ Сервер временно недоступен.\n\nЕсли проблема повторяется, напиши @{SUPPORT_USERNAME}"
         )
 
-@bot.message_handler(commands=['help'])
-def help(message):
-    markup = InlineKeyboardMarkup()
-    
-    cache_buster = int(time.time())
-    
-    web_app_button = InlineKeyboardButton(
-        text="🚀 Открыть Pingster",
-        web_app=telebot.types.WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}')
+@bot.message_handler(commands=['support'])
+def support(message):
+    """Команда /support — контакты поддержки"""
+    bot.send_message(
+        message.chat.id,
+        f" **Поддержка Pingster**\n\n"
+        f"По всем вопросам писать:\n"
+        f"👉 @{SUPPORT_USERNAME}\n\n",
+        parse_mode='Markdown'
     )
-    markup.add(web_app_button)
-    
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    """Команда /help — справка"""
     bot.send_message(
         message.chat.id,
         "🎮 **Pingster — поиск тиммейтов для CS2**\n\n"
         "**Команды:**\n"
-        "/start - Начать\n"
-        "/help - Помощь\n"
-        "/check - Проверить сервер\n\n"
+        "/start — запустить приложение\n"
+        "/support — связаться с поддержкой\n\n"
         "**Как это работает:**\n"
-        "1. Открой Mini App по кнопке ниже\n"
-        "2. Заполни профиль\n"
-        "3. Нажми 'Найти тиммейта'\n"
-        "4. Прими мэтч и играй!",
-        parse_mode='Markdown',
-        reply_markup=markup
+        "1. Нажми «Запустить» в меню слева\n"
+        "2. Выбери режим и начни поиск\n"
+        "3. Свайпай и находи тиммейтов!",
+        parse_mode='Markdown'
     )
-
-@bot.message_handler(commands=['check'])
-def check(message):
-    try:
-        response = requests.get(f'{API_URL}', timeout=5)
-        if response.status_code == 200:
-            bot.reply_to(message, f"✅ Сервер доступен!\nОтвет: {response.text}")
-        else:
-            bot.reply_to(message, f"❌ Сервер вернул ошибку: {response.status_code}")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка подключения: {str(e)}")
 
 # ============================================
 # ОБРАБОТЧИК НАЖАТИЯ КНОПОК
@@ -251,13 +240,16 @@ def check_forum_callback(call):
         
         try:
             bot.edit_message_text(
-                "✅ Отлично! Ты в форуме. Загружаем главное меню...",
+                "✅ Отлично! Ты в форуме.\n\n"
+                "Теперь нажми кнопку **«Запустить»** в меню слева от ввода сообщения! 🚀",
                 user_id,
-                call.message.message_id
+                call.message.message_id,
+                parse_mode='Markdown'
             )
         except:
             pass
         
+        # Регистрируем пользователя
         response = api_request_with_retry(
             f'{API_URL}/user/init',
             {'telegram_id': user_id, 'username': 'from_forum'},
@@ -277,10 +269,6 @@ def check_forum_callback(call):
             show_alert=True
         )
 
-# ============================================
-# 🔥 ОБРАБОТЧИК КНОПОК РЕПУТАЦИИ (НОВОЕ)
-# ============================================
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote_'))
 def handle_reputation_vote(call):
     """Обрабатывает нажатие на кнопки 👍 или 👎"""
@@ -290,7 +278,6 @@ def handle_reputation_vote(call):
     
     print(f"🗳 Получен голос: {callback_data} от пользователя {user_id}")
     
-    # Отправляем данные в API для обработки
     try:
         response = requests.post(
             f'{API_URL}/reputation/vote',
@@ -325,12 +312,14 @@ if __name__ == '__main__':
     print(f"📡 API URL: {API_URL}")
     print(f"🌐 FRONTEND URL: {FRONTEND_URL}")
     print(f"📢 Форум: @{FORUM_USERNAME}")
-    print("✅ Режим: с проверкой форума и кнопкой подтверждения")
-    print("✅ Cache buster активен")
-    print("✅ Повторные попытки при ошибках (3 раза)")
-    print("🔥 Репутация: обработчик vote_ добавлен")
+    print(f"📞 Поддержка: @{SUPPORT_USERNAME}")
     
     bot.remove_webhook()
+    
+    # 🔥 НАСТРАИВАЕМ КНОПКУ В МЕНЮ
+    setup_bot_menu()
+    
+    print("🚀 Бот готов к работе!")
     
     while True:
         try:
