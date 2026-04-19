@@ -452,9 +452,17 @@ def calculate_score(player: Dict, candidate: Dict, mode: str) -> int:
 def get_range_buckets(mode: str, style: str, bucket: int) -> Tuple[Optional[int], Optional[int]]:
     """Получение диапазона поиска по бакетам"""
     if mode == 'faceit':
+        # Faceit: ±4 бакета = ±400 ELO
         return bucket - 4, bucket + 4
-    elif mode == 'premier' and style == 'tryhard':
-        return bucket - 5, bucket + 5
+    elif mode == 'premier':
+        # Premier: ±1 бакет = ±5000 рейтинга
+        return bucket - 1, bucket + 1
+    elif mode == 'prime':
+        # Prime: ±8 бакетов = ±800 рейтинга
+        return bucket - 8, bucket + 8
+    elif mode == 'public':
+        # Public: без фильтра
+        return None, None
     return None, None
 
 def generate_match_token(match_id: int, user_id: str, expires_at: int) -> str:
@@ -544,7 +552,7 @@ def send_match_notification(telegram_id, match_id, teammate_nick, chat_link):
             ]
         }
         
-        message = f"🎮 У вас создан матч #{match_id} с игроком {teammate_nick}\n\nОцените тиммейта:"
+        message = f"🎮 У вас создан мэтч #{match_id} с игроком {teammate_nick}\n\nОцените тиммейта:"
         
         response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -1152,7 +1160,13 @@ def start_search():
                 rating_number = RANK_TO_VALUE[rank_value]
                 rank_display = rank_value  # 🔥 СОХРАНЯЕМ СТРОКОВОЕ НАЗВАНИЕ РАНГА
             
-            rating_bucket = rating_number // 100
+            # 🔥 РАЗНЫЙ ДЕЛИТЕЛЬ ДЛЯ РАЗНЫХ РЕЖИМОВ
+            if mode == 'premier':
+                rating_bucket = rating_number // 5000  # Бакет = 0, 1, 2... 8 (для 0-40000)
+            elif mode == 'faceit':
+                rating_bucket = rating_number // 100   # Бакет = 0-50 (для 0-5000)
+            else:
+                rating_bucket = rating_number // 100   # Prime/Public
             
             # 🔥 СОХРАНЯЕМ ОРИГИНАЛЬНЫЙ РЕЖИМ — КАЖДЫЙ В СВОЕЙ ОЧЕРЕДИ
             cursor.execute("""
@@ -1898,7 +1912,6 @@ def active_match():
         logger.error(f"Ошибка active_match: {e}")
         raise AppError(str(e), 500, "INTERNAL_ERROR")
 
-# ---------- ИГРЫ ----------
 @app.route('/api/game/create', methods=['POST'])
 @rate_limit(limit=5, window=60)
 def create_game():
@@ -1910,9 +1923,15 @@ def create_game():
         match_id = data['match_id']
         
         with get_db_cursor() as cursor:
+            # 🔥 БЛОКИРОВКА ПО match_id — предотвращает двойное создание
+            lock_key = hash(f"game_{match_id}") % 2**31
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key,))
+            
+            # Проверяем, не создана ли уже игра
             cursor.execute("SELECT id, telegram_chat_link FROM games WHERE match_id = %s", (match_id,))
             existing = cursor.fetchone()
             if existing:
+                logger.info(f"🎮 Игра для матча {match_id} уже существует, возвращаем существующую")
                 return jsonify({
                     "status": "ok",
                     "game_id": existing[0],
@@ -1958,15 +1977,27 @@ def create_game():
             telegram_id1, nick1 = user1
             telegram_id2, nick2 = user2
             
+            # 🔥 СНАЧАЛА СОЗДАЁМ ЗАПИСЬ В games, ЧТОБЫ ПОЛУЧИТЬ ID
+            expires_at = datetime.utcnow() + timedelta(minutes=30)
+            cursor.execute("""
+                INSERT INTO games (match_id, player1_id, player2_id, status, created_at, expires_at)
+                VALUES (%s, %s, %s, 'pending', (NOW() AT TIME ZONE 'UTC'), %s)
+                RETURNING id
+            """, (match_id, player1_id, player2_id, expires_at))
+            game_id = cursor.fetchone()[0]
+            
+            # 🔥 ТЕПЕРЬ У НАС ЕСТЬ КРАСИВЫЙ ID — Игра #{game_id}
             import requests
             create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
             topic_response = requests.post(create_topic_url, json={
                 "chat_id": FORUM_GROUP_ID,
-                "name": f"🎮 Match #{match_id} | {nick1} & {nick2}",
+                "name": f"🎮 Игра #{game_id} | {nick1} & {nick2}",
                 "icon_color": 0x6FB9F0
             }, timeout=5)
             
             if not topic_response.ok:
+                # Если не удалось создать топик — удаляем запись из games
+                cursor.execute("DELETE FROM games WHERE id = %s", (game_id,))
                 logger.error(f"Failed to create topic: {topic_response.text}")
                 raise AppError("Failed to create game topic", 500, "TELEGRAM_ERROR")
             
@@ -1975,20 +2006,21 @@ def create_game():
             
             clean_chat_id = str(FORUM_GROUP_ID).replace('-100', '')
             public_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
-            expires_at = datetime.utcnow() + timedelta(minutes=30)
             
+            # 🔥 ОБНОВЛЯЕМ ЗАПИСЬ — ДОБАВЛЯЕМ ДАННЫЕ ЧАТА
             cursor.execute("""
-                INSERT INTO games (match_id, player1_id, player2_id, telegram_chat_id, telegram_chat_link, status, created_at, expires_at)
-                VALUES (%s, %s, %s, %s, %s, 'active', (NOW() AT TIME ZONE 'UTC'), %s)
-                RETURNING id
-            """, (match_id, player1_id, player2_id, topic_id, public_link, expires_at))
-            game_id = cursor.fetchone()[0]
+                UPDATE games 
+                SET telegram_chat_id = %s, 
+                    telegram_chat_link = %s, 
+                    status = 'active'
+                WHERE id = %s
+            """, (topic_id, public_link, game_id))
             
             welcome_message = (
-                f"🎮 **Матч #{match_id} создан!**\n\n"
-                f" {nick1} & {nick2}\n"
-                f" Режим: {mode.upper()}\n"
-                f" вы можете перейти в лс или остаться в чате, чат активен 30 минут"
+                f"🎮 **Мэтч #{game_id} создан!**\n\n"
+                f"👤 {nick1} & {nick2}\n"
+                f"🎯 Режим: {mode.upper()}\n"
+                f"💬 Чат активен 30 минут или перейдите лс"
             )
             
             requests.post(
@@ -2003,14 +2035,14 @@ def create_game():
             )
             
             # 🔥 ОТПРАВЛЯЕМ ЛИЧНЫЕ УВЕДОМЛЕНИЯ С КНОПКАМИ ОЦЕНКИ
-            send_match_notification(telegram_id1, match_id, nick2, public_link)
-            send_match_notification(telegram_id2, match_id, nick1, public_link)
+            send_match_notification(telegram_id1, game_id, nick2, public_link)
+            send_match_notification(telegram_id2, game_id, nick1, public_link)
             
             # 🔥 ПРОВЕРЯЕМ ПЕРВЫЙ МАТЧ ДЛЯ ОБОИХ ИГРОКОВ (+150 leadercoins)
             for pid in [player1_id, player2_id]:
                 cursor.execute("""
                     SELECT COUNT(*) FROM games 
-                    WHERE player1_id = %s OR player2_id = %s
+                    WHERE (player1_id = %s OR player2_id = %s) AND status = 'active'
                 """, (pid, pid))
                 games_count = cursor.fetchone()[0]
                 
