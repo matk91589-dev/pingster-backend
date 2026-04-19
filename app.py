@@ -1238,6 +1238,7 @@ def check_match():
                             "age": opponent_age,
                             "style": opponent_style,
                             "rating": opponent_rank,
+                            "rank": opponent_rank,  # 🔥 ДОБАВЛЕНО ПОЛЕ rank
                             "trust_rating": trust_rating,
                             "steam_link": opponent_steam_link,
                             "faceit_link": opponent_faceit_link,
@@ -1257,7 +1258,7 @@ def check_match():
             
             if not current:
                 logger.info("❌ Игрок не в очереди")
-                return jsonify({"match_found": False})
+                return jsonify({"match_found": False, "in_queue": False})  # 🔥 ДОБАВЛЕНО in_queue: False
             
             logger.info(f"📋 Текущий игрок в очереди: style={current['style']}, steam={current.get('steam_link')}")
             
@@ -1283,7 +1284,7 @@ def check_match():
             
             if not candidates:
                 logger.info("❌ Кандидатов не найдено")
-                return jsonify({"match_found": False})
+                return jsonify({"match_found": False, "in_queue": True})  # 🔥 ДОБАВЛЕНО in_queue: True
             
             candidates_list = []
             for cand in candidates:
@@ -1333,12 +1334,14 @@ def check_match():
             trust_rating = trust_data[0] if trust_data else 0
             
             # Данные для ответа
+            rank_value = best['rank'] if best['rank'] and best['rank'] != '0' else "—"
             opponent_data = {
                 "player_id": best['player_id'],
                 "nick": best['nick'],
                 "age": best['age'] or 0,
                 "style": best['style'] or "fan",
-                "rating": best['rank'] if best['rank'] and best['rank'] != '0' else "0",
+                "rating": rank_value,
+                "rank": rank_value,  # 🔥 ДОБАВЛЕНО ПОЛЕ rank
                 "trust_rating": trust_rating,
                 "steam_link": best.get('steam_link') or "Не указана",
                 "faceit_link": best.get('faceit_link') or "Не указана",
@@ -1356,7 +1359,8 @@ def check_match():
                 "match_found": True,
                 "match_id": match_id,
                 "opponent": opponent_data,
-                "expires_at": expires_at.isoformat() + "Z"
+                "expires_at": expires_at.isoformat() + "Z",
+                "in_queue": True  # 🔥 ДОБАВЛЕНО in_queue: True
             })
     except AppError:
         raise
