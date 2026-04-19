@@ -24,8 +24,8 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 
 # Хранилище сообщений
-user_messages = {}
-temp_messages = {}
+user_messages = {}  # {user_id: {'start': {'user': msg_id, 'bot': msg_id}, 'support': {...}}}
+temp_messages = {}  # для форума
 
 # ============================================
 # ФУНКЦИИ
@@ -39,21 +39,29 @@ def delete_message_later(chat_id, message_id, delay=30):
     except:
         pass
 
-def replace_message(user_id, msg_type, new_msg):
-    """Заменяет старое сообщение того же типа"""
+def delete_old_command(user_id, msg_type):
+    """Удаляет старые сообщения команды (и юзера, и бота)"""
     if user_id in user_messages and msg_type in user_messages[user_id]:
-        try:
-            bot.delete_message(user_id, user_messages[user_id][msg_type])
-        except:
-            pass
-    
+        old = user_messages[user_id][msg_type]
+        if 'user' in old:
+            try:
+                bot.delete_message(user_id, old['user'])
+            except:
+                pass
+        if 'bot' in old:
+            try:
+                bot.delete_message(user_id, old['bot'])
+            except:
+                pass
+
+def save_command_message(user_id, msg_type, user_msg_id, bot_msg_id):
+    """Сохраняет ID сообщений команды"""
     if user_id not in user_messages:
         user_messages[user_id] = {}
-    user_messages[user_id][msg_type] = new_msg.message_id
-    
-    # Авто-удаление для support
-    if msg_type == 'support':
-        threading.Thread(target=delete_message_later, args=(user_id, new_msg.message_id, 30), daemon=True).start()
+    user_messages[user_id][msg_type] = {
+        'user': user_msg_id,
+        'bot': bot_msg_id
+    }
 
 def is_user_in_forum(user_id):
     """Проверяет, состоит ли пользователь в форуме"""
@@ -108,12 +116,10 @@ def send_forum_invite(user_id):
 def start(message):
     telegram_id = message.from_user.id
     username = message.from_user.username or 'юзер'
+    user_msg_id = message.message_id
     
-    # Удаляем сообщение с командой
-    try:
-        bot.delete_message(telegram_id, message.message_id)
-    except:
-        pass
+    # Удаляем старые сообщения start
+    delete_old_command(telegram_id, 'start')
     
     # Проверяем форум
     if not is_user_in_forum(telegram_id):
@@ -146,42 +152,49 @@ def start(message):
         web_app=WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={telegram_id}')
     ))
     
-    new_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
-    replace_message(telegram_id, 'start', new_msg)
+    bot_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
+    save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
 
 @bot.message_handler(commands=['support'])
 def support_command(message):
     telegram_id = message.from_user.id
+    user_msg_id = message.message_id
     
-    try:
-        bot.delete_message(telegram_id, message.message_id)
-    except:
-        pass
+    # Удаляем старые сообщения support
+    delete_old_command(telegram_id, 'support')
     
-    text = f"📞 **Поддержка Pingster**\n\n👇 написать в поддержку"
+    text = f" **Поддержка Pingster**\n\n👇 написать в поддержку"
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(
-        text="💬 ПОДДЕРЖКА",
+        text="поддержка",
         url=f"https://t.me/{SUPPORT_USERNAME}"
     ))
     
-    new_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
-    replace_message(telegram_id, 'support', new_msg)
+    bot_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
+    save_command_message(telegram_id, 'support', user_msg_id, bot_msg.message_id)
+    
+    # Запускаем таймер на удаление новых сообщений через 30 секунд
+    threading.Thread(target=delete_message_later, args=(telegram_id, user_msg_id, 30), daemon=True).start()
+    threading.Thread(target=delete_message_later, args=(telegram_id, bot_msg.message_id, 30), daemon=True).start()
 
 # ============================================
-# УДАЛЕНИЕ ЛЮБЫХ ДРУГИХ СООБЩЕНИЙ
+# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ ОТ ПОЛЬЗОВАТЕЛЯ
 # ============================================
 
 @bot.message_handler(func=lambda message: True)
-def delete_other_messages(message):
+def delete_unknown_messages(message):
+    """Удаляет все сообщения от пользователя, которые не являются командами"""
     telegram_id = message.from_user.id
     
+    # Пропускаем команды (они уже обработаны)
     if message.text and message.text.startswith('/'):
         return
     
+    # Удаляем любое другое сообщение от пользователя
     try:
         bot.delete_message(telegram_id, message.message_id)
+        print(f"🗑 Удалено сообщение от {telegram_id}")
     except:
         pass
 
@@ -228,8 +241,7 @@ def check_forum_callback(call):
             web_app=WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={user_id}')
         ))
         
-        new_msg = bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=markup)
-        replace_message(user_id, 'start', new_msg)
+        bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=markup)
     else:
         bot.answer_callback_query(
             call.id,
@@ -239,6 +251,7 @@ def check_forum_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote_'))
 def handle_reputation_vote(call):
+    """Обрабатывает голоса за репутацию — эти сообщения НЕ УДАЛЯЕМ!"""
     user_id = call.from_user.id
     callback_data = call.data
     message = call.message
@@ -273,7 +286,10 @@ if __name__ == '__main__':
     print(f"📡 API: {API_URL}")
     print(f"🌐 FRONTEND: {FRONTEND_URL}")
     print(f"📞 Поддержка: @{SUPPORT_USERNAME}")
-    print("🗑 /support удаляется через 30с")
+    print("🗑 Непонятные сообщения удаляются сразу")
+    print("🔄 Новый /start заменяет старый")
+    print("⏱ /support удаляется через 30с")
+    print("👍 Сообщения с оценкой тиммейта НЕ удаляются")
     
     bot.remove_webhook()
     
