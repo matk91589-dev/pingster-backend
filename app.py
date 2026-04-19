@@ -1205,7 +1205,6 @@ def check_match():
             
             if match:
                 logger.info(f"📋 Найден существующий матч id={match['id']}")
-                logger.info(f"📋 player1_steam={match.get('player1_steam_link')}, player2_steam={match.get('player2_steam_link')}")
                 
                 other_id = match['player2_id'] if match['player1_id'] == player_id else match['player1_id']
                 is_player1 = (str(match['player1_id']) == str(player_id))
@@ -1225,7 +1224,6 @@ def check_match():
                         opponent_comment = match['player2_comment'] or "Нет комментария"
                         opponent_steam_link = match.get('player2_steam_link') or profile.get('steam_link') or "Не указана"
                         opponent_faceit_link = match.get('player2_faceit_link') or profile.get('faceit_link') or "Не указана"
-                        logger.info(f"📋 opponent_steam из player2: {opponent_steam_link}")
                     else:
                         opponent_age = match['player1_age'] or profile['age'] or 0
                         opponent_rank = match['player1_rank'] or "0"
@@ -1233,7 +1231,6 @@ def check_match():
                         opponent_comment = match['player1_comment'] or "Нет комментария"
                         opponent_steam_link = match.get('player1_steam_link') or profile.get('steam_link') or "Не указана"
                         opponent_faceit_link = match.get('player1_faceit_link') or profile.get('faceit_link') or "Не указана"
-                        logger.info(f"📋 opponent_steam из player1: {opponent_steam_link}")
                     
                     return jsonify({
                         "match_found": True,
@@ -1244,7 +1241,7 @@ def check_match():
                             "age": opponent_age,
                             "style": opponent_style,
                             "rating": opponent_rank,
-                            "rank": opponent_rank,  # 🔥 ДОБАВЛЕНО ПОЛЕ rank
+                            "rank": opponent_rank,
                             "trust_rating": trust_rating,
                             "steam_link": opponent_steam_link,
                             "faceit_link": opponent_faceit_link,
@@ -1264,12 +1261,24 @@ def check_match():
             
             if not current:
                 logger.info("❌ Игрок не в очереди")
-                return jsonify({"match_found": False, "in_queue": False})  # 🔥 ДОБАВЛЕНО in_queue: False
+                return jsonify({"match_found": False, "in_queue": False})
             
-            logger.info(f"📋 Текущий игрок в очереди: style={current['style']}, steam={current.get('steam_link')}")
+            logger.info(f"📋 Текущий игрок: mode={current['mode']}, style={current['style']}, rating_bucket={current['rating_bucket']}, rank={current['rank']}")
             
-            min_bucket, max_bucket = None, None  # Временно отключаем фильтр по бакетам
+            # 🔥 ВКЛЮЧАЕМ ФИЛЬТР ПО БАКЕТАМ
+            min_bucket, max_bucket = get_range_buckets(
+                current['mode'], 
+                current['style'], 
+                current['rating_bucket']
+            )
             
+            # Логируем диапазон поиска
+            if min_bucket is not None and max_bucket is not None:
+                logger.info(f"🎯 Диапазон поиска: бакеты {min_bucket}-{max_bucket}")
+            else:
+                logger.info(f"🎯 Режим без фильтрации: ищем всех")
+            
+            # Базовый запрос
             query = """
                 SELECT sq.*, p.nick, p.avatar
                 FROM search_queue sq
@@ -1280,20 +1289,33 @@ def check_match():
             """
             params = [current['mode'], player_id]
             
-            if min_bucket is not None:
+            # 🔥 ПРИМЕНЯЕМ ФИЛЬТР ПО БАКЕТАМ, ЕСЛИ ОН ЕСТЬ
+            if min_bucket is not None and max_bucket is not None:
                 query += " AND sq.rating_bucket BETWEEN %s AND %s"
                 params.extend([min_bucket, max_bucket])
             
             query += " FOR UPDATE SKIP LOCKED"
+            
             cursor.execute(query, params)
             candidates = cursor.fetchall()
             
-            if not candidates:
-                logger.info("❌ Кандидатов не найдено")
-                return jsonify({"match_found": False, "in_queue": True})  # 🔥 ДОБАВЛЕНО in_queue: True
+            logger.info(f"🔍 Найдено кандидатов в диапазоне: {len(candidates)}")
             
+            if not candidates:
+                logger.info("❌ Кандидатов не найдено в заданном диапазоне")
+                return jsonify({
+                    "match_found": False, 
+                    "in_queue": True,
+                    "search_range": {
+                        "min_bucket": min_bucket,
+                        "max_bucket": max_bucket
+                    } if min_bucket is not None else None
+                })
+            
+            # 🔥 СОРТИРУЕМ ПО СОВМЕСТИМОСТИ
             candidates_list = []
             for cand in candidates:
+                # Подготавливаем данные для расчета скора
                 player_data = {
                     'rank': current['rank'],
                     'age': current['age']
@@ -1305,10 +1327,13 @@ def check_match():
                 score = calculate_score(player_data, cand_data, current['mode'])
                 candidates_list.append((score, cand))
             
+            # Сортируем по скору (меньше = лучше)
             candidates_list.sort(key=lambda x: x[0])
-            best = candidates_list[0][1]
             
-            logger.info(f"✅ Найден кандидат: player_id={best['player_id']}, steam={best.get('steam_link')}, style={best.get('style')}")
+            # 🔥 Берем лучшего кандидата
+            best_score, best = candidates_list[0]
+            
+            logger.info(f"✅ Найден кандидат: player_id={best['player_id']}, score={best_score}, rank={best['rank']}, bucket={best['rating_bucket']}")
             
             expires_at = datetime.utcnow() + timedelta(seconds=40)
             
@@ -1347,7 +1372,7 @@ def check_match():
                 "age": best['age'] or 0,
                 "style": best['style'] or "fan",
                 "rating": rank_value,
-                "rank": rank_value,  # 🔥 ДОБАВЛЕНО ПОЛЕ rank
+                "rank": rank_value,
                 "trust_rating": trust_rating,
                 "steam_link": best.get('steam_link') or "Не указана",
                 "faceit_link": best.get('faceit_link') or "Не указана",
@@ -1361,13 +1386,24 @@ def check_match():
             cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
                           (player_id, best['player_id']))
             
+            # 🔥 ДОБАВЛЯЕМ ИНФУ О ДИАПАЗОНЕ ПОИСКА В ОТВЕТ
+            search_range = None
+            if min_bucket is not None and max_bucket is not None:
+                search_range = {
+                    "min_bucket": min_bucket,
+                    "max_bucket": max_bucket
+                }
+            
             return jsonify({
                 "match_found": True,
                 "match_id": match_id,
                 "opponent": opponent_data,
                 "expires_at": expires_at.isoformat() + "Z",
-                "in_queue": True  # 🔥 ДОБАВЛЕНО in_queue: True
+                "in_queue": True,
+                "search_range": search_range,  # 🔥 Чтобы фронт понимал, в каком диапазоне искали
+                "compatibility_score": best_score  # 🔥 Показываем насколько хорошо подходит (меньше = лучше)
             })
+            
     except AppError:
         raise
     except Exception as e:
