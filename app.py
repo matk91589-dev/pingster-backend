@@ -1116,12 +1116,13 @@ def start_search():
             cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
             
             mode = data.get('mode', '').lower()
-            if mode not in ['faceit', 'premier', 'competitive']:
-                raise ValidationError("Invalid mode", ["mode must be faceit, premier, or competitive"])
+            # 🔥 ВСЕ РЕЖИМЫ РАЗРЕШЕНЫ
+            if mode not in ['faceit', 'premier', 'prime', 'public']:
+                raise ValidationError("Invalid mode", ["mode must be faceit, premier, prime, or public"])
             
             rank_value = data.get('rating_value', '0')
             
-            #  ОПРЕДЕЛЯЕМ ЧТО СОХРАНЯТЬ В ПОЛЕ rank
+            # 🔥 ОПРЕДЕЛЯЕМ ЧТО СОХРАНЯТЬ В ПОЛЕ rank
             if mode in ['faceit', 'premier']:
                 try:
                     rating_number = int(rank_value)
@@ -1133,20 +1134,21 @@ def start_search():
                     raise ValidationError("Invalid rating value", [error_msg])
                 rank_display = str(rating_number)  # Для FACEIT/PREMIER сохраняем число
             else:
-                # Для PRIME/PUBLIC (competitive) сохраняем НАЗВАНИЕ ранга
+                # Для prime/public сохраняем НАЗВАНИЕ ранга
                 if rank_value not in RANK_TO_VALUE:
                     raise ValidationError("Invalid rank", ["rank must be valid CS2 rank"])
                 rating_number = RANK_TO_VALUE[rank_value]
-                rank_display = rank_value  #  СОХРАНЯЕМ СТРОКОВОЕ НАЗВАНИЕ РАНГА
+                rank_display = rank_value  # 🔥 СОХРАНЯЕМ СТРОКОВОЕ НАЗВАНИЕ РАНГА
             
             rating_bucket = rating_number // 100
             
+            # 🔥 СОХРАНЯЕМ ОРИГИНАЛЬНЫЙ РЕЖИМ — КАЖДЫЙ В СВОЕЙ ОЧЕРЕДИ
             cursor.execute("""
                 INSERT INTO search_queue 
                 (player_id, mode, rank, rating_bucket, style, age, steam_link, faceit_link, comment, joined_at, expires_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC' + INTERVAL '2 minutes'))
             """, (
-                player_id, mode, rank_display, rating_bucket,  #  ИСПОЛЬЗУЕМ rank_display
+                player_id, mode, rank_display, rating_bucket,
                 data.get('style', 'fan'), data.get('age'),
                 data.get('steam_link'), data.get('faceit_link'), data.get('comment')
             ))
