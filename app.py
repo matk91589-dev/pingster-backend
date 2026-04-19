@@ -1310,7 +1310,7 @@ def check_match():
             
             logger.info(f"✅ Найден кандидат: player_id={best['player_id']}, steam={best.get('steam_link')}, style={best.get('style')}")
             
-            expires_at = datetime.utcnow() + timedelta(seconds=30)
+            expires_at = datetime.utcnow() + timedelta(seconds=40)
             
             # Сохраняем матч
             cursor.execute("""
