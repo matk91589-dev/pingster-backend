@@ -207,17 +207,23 @@ def check_forum_callback(call):
     user_id = call.from_user.id
     username = call.from_user.username or 'юзер'
     
+    print(f"🔍 Проверка форума для {user_id} (@{username})")
+    
     if is_user_in_forum(user_id):
+        print(f"✅ {user_id} в форуме!")
         delete_temp_message(user_id)
         
-        bot.edit_message_text(
-            "✅ Отлично! Ты в форуме!\n\nЗагружаем главное меню...",
-            user_id,
-            call.message.message_id
-        )
+        # Удаляем сообщение с кнопками
+        try:
+            bot.delete_message(user_id, call.message.message_id)
+            print(f"🗑 Сообщение с кнопками удалено")
+        except Exception as e:
+            print(f"⚠️ Не удалось удалить сообщение: {e}")
         
+        # Регистрируем пользователя
         player_id = None
         try:
+            print(f"📡 Регистрация пользователя в API...")
             response = requests.post(
                 f'{API_URL}/user/init',
                 json={'telegram_id': user_id, 'username': username},
@@ -226,9 +232,13 @@ def check_forum_callback(call):
             if response.status_code == 200:
                 data = response.json()
                 player_id = data.get('player_id')
-        except:
-            pass
+                print(f"✅ Пользователь зарегистрирован, player_id: {player_id}")
+            else:
+                print(f"⚠️ Ошибка API: {response.status_code}")
+        except Exception as e:
+            print(f"❌ Ошибка регистрации: {e}")
         
+        # Формируем приветственное сообщение
         text = f"***@{username}***\n"
         text += f"Добро пожаловать в Pingster!\n\n"
         text += f"👤 твой игровой id: {player_id or '—'}\n\n"
@@ -241,8 +251,36 @@ def check_forum_callback(call):
             web_app=WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={user_id}')
         ))
         
-        bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=markup)
+        # Отправляем меню
+        try:
+            new_msg = bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=markup)
+            print(f"✅ Меню отправлено, msg_id: {new_msg.message_id}")
+            
+            # Сохраняем в user_messages
+            if user_id not in user_messages:
+                user_messages[user_id] = {}
+            user_messages[user_id]['start'] = {
+                'user': 0,  # Нет сообщения пользователя
+                'bot': new_msg.message_id
+            }
+        except Exception as e:
+            print(f"❌ Ошибка отправки меню с Markdown: {e}")
+            # Пробуем без Markdown
+            try:
+                plain_text = f"@{username}\nДобро пожаловать в Pingster!\n\n👤 твой игровой id: {player_id or '—'}\n\n👇 Нажми кнопку ниже, чтобы начать:"
+                new_msg = bot.send_message(user_id, plain_text, reply_markup=markup)
+                print(f"✅ Меню отправлено (plain text)")
+                
+                if user_id not in user_messages:
+                    user_messages[user_id] = {}
+                user_messages[user_id]['start'] = {
+                    'user': 0,
+                    'bot': new_msg.message_id
+                }
+            except Exception as e2:
+                print(f"❌ Полная ошибка отправки: {e2}")
     else:
+        print(f"❌ {user_id} НЕ в форуме!")
         bot.answer_callback_query(
             call.id,
             "❌ Ты ещё не в форуме! Сначала нажми «Вступить в форум»",
