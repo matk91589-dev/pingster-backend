@@ -323,6 +323,13 @@ def validate_faceit_link(link: str) -> Tuple[bool, Optional[str]]:
 def validate_avatar_url(url: str) -> Tuple[bool, Optional[str]]:
     if not url:
         return True, None
+    
+    # ПРОВЕРЯЕМ: ЭТО BASE64 ИЛИ URL?
+    if url.startswith('data:image'):
+        # Это base64 — всегда валидно
+        return True, None
+    
+    # Это URL — проверяем формат
     pattern = r'^https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+\.(?:jpg|jpeg|png|gif|webp)(?:\?.*)?$'
     if not re.match(pattern, url):
         return False, "Invalid avatar URL format"
@@ -980,12 +987,17 @@ def update_profile():
 def update_avatar():
     try:
         data = request.json
-        if not data or 'telegram_id' not in data or 'avatar_url' not in data:
-            raise ValidationError("Missing fields", ["telegram_id and avatar_url are required"])
+        if not data or 'telegram_id' not in data:
+            raise ValidationError("Missing fields", ["telegram_id is required"])
         
-        is_valid, error = validate_avatar_url(data['avatar_url'])
+        # 🔥 ПРИНИМАЕМ И avatar_url И avatar
+        avatar_data = data.get('avatar_url') or data.get('avatar')
+        if not avatar_data:
+            raise ValidationError("Missing avatar data", ["avatar_url or avatar is required"])
+        
+        is_valid, error = validate_avatar_url(avatar_data)
         if not is_valid:
-            raise ValidationError(error, ["avatar_url"])
+            raise ValidationError(error, ["avatar"])
         
         update_user_activity(data['telegram_id'])
         
@@ -998,14 +1010,14 @@ def update_avatar():
                 UPDATE profiles SET avatar = %s 
                 WHERE player_id = %s 
                 RETURNING avatar
-            """, (data['avatar_url'], player_id))
+            """, (avatar_data, player_id))
             updated = cursor.fetchone()
         
         invalidate_cache(player_id=player_id)
         
         return jsonify({
             "status": "ok",
-            "avatar_url": updated[0] if updated else None
+            "avatar": updated[0] if updated else None
         })
     except AppError:
         raise
