@@ -1922,26 +1922,8 @@ def create_game():
         
         match_id = data['match_id']
         logger.info(f"🎮 Создание игры для матча {match_id}")
-        logger.info(f"🔍 DEBUG: FORUM_GROUP_ID = {FORUM_GROUP_ID}")
-        logger.info(f"🔍 DEBUG: BOT_TOKEN exists = {bool(BOT_TOKEN)}")
         
         with get_db_cursor() as cursor:
-            # 🔥 БЛОКИРОВКА ПО match_id — предотвращает двойное создание
-            lock_key = hash(f"game_{match_id}") % 2**31
-            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (lock_key,))
-            
-            # Проверяем, не создана ли уже игра
-            cursor.execute("SELECT id, telegram_chat_link FROM games WHERE match_id = %s", (match_id,))
-            existing = cursor.fetchone()
-            if existing:
-                logger.info(f"🎮 Игра для матча {match_id} уже существует, возвращаем существующую")
-                return jsonify({
-                    "status": "ok",
-                    "game_id": existing[0],
-                    "chat_link": existing[1],
-                    "already_exists": True
-                })
-            
             match = None
             for i in range(5):
                 cursor.execute("""
@@ -1980,10 +1962,8 @@ def create_game():
             
             telegram_id1, nick1 = user1
             telegram_id2, nick2 = user2
-            logger.info(f"👤 Игрок 1: @{nick1} (Telegram ID: {telegram_id1})")
-            logger.info(f"👤 Игрок 2: @{nick2} (Telegram ID: {telegram_id2})")
             
-            # 🔥 СНАЧАЛА СОЗДАЁМ ЗАПИСЬ В games, ЧТОБЫ ПОЛУЧИТЬ ID
+            # Создаём запись в games
             expires_at = datetime.utcnow() + timedelta(minutes=30)
             cursor.execute("""
                 INSERT INTO games (match_id, player1_id, player2_id, status, created_at, expires_at)
@@ -1993,14 +1973,12 @@ def create_game():
             game_id = cursor.fetchone()[0]
             logger.info(f"📝 Создана запись в БД, game_id = {game_id}")
             
-            # 🔥 ТЕПЕРЬ У НАС ЕСТЬ КРАСИВЫЙ ID — Игра #{game_id}
+            # Создаём тему в форуме
             import requests
             create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
             topic_name = f"🎮 Мэтч #{game_id} | {nick1} & {nick2}"
             
             logger.info(f"📡 Отправляем запрос на создание темы: {topic_name}")
-            logger.info(f"📡 URL: {create_topic_url}")
-            logger.info(f"📡 chat_id: {FORUM_GROUP_ID}")
             
             topic_response = requests.post(create_topic_url, json={
                 "chat_id": FORUM_GROUP_ID,
@@ -2008,11 +1986,7 @@ def create_game():
                 "icon_color": 0x6FB9F0
             }, timeout=5)
             
-            logger.info(f"📡 Ответ API: статус {topic_response.status_code}")
-            logger.info(f"📡 Тело ответа: {topic_response.text}")
-            
             if not topic_response.ok:
-                # Если не удалось создать топик — удаляем запись из games
                 cursor.execute("DELETE FROM games WHERE id = %s", (game_id,))
                 logger.error(f"❌ Ошибка создания темы: {topic_response.text}")
                 raise AppError("Failed to create game topic", 500, "TELEGRAM_ERROR")
@@ -2023,9 +1997,7 @@ def create_game():
             
             clean_chat_id = str(FORUM_GROUP_ID).replace('-100', '')
             public_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
-            logger.info(f"🔗 Ссылка на чат: {public_link}")
             
-            # 🔥 ОБНОВЛЯЕМ ЗАПИСЬ — ДОБАВЛЯЕМ ДАННЫЕ ЧАТА
             cursor.execute("""
                 UPDATE games 
                 SET telegram_chat_id = %s, 
@@ -2033,7 +2005,6 @@ def create_game():
                     status = 'active'
                 WHERE id = %s
             """, (topic_id, public_link, game_id))
-            logger.info(f"📝 БД обновлена, статус = active")
             
             welcome_message = (
                 f"🎮 **Мэтч #{game_id} создан!**\n\n"
@@ -2042,7 +2013,7 @@ def create_game():
                 f"💬 Чат активен 30 минут или перейдите лс"
             )
             
-            send_msg_response = requests.post(
+            requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                 json={
                     "chat_id": FORUM_GROUP_ID,
@@ -2052,14 +2023,10 @@ def create_game():
                 },
                 timeout=3
             )
-            logger.info(f"📡 Приветственное сообщение отправлено: {send_msg_response.ok}")
             
-            # 🔥 ОТПРАВЛЯЕМ ЛИЧНЫЕ УВЕДОМЛЕНИЯ С КНОПКАМИ ОЦЕНКИ
             send_match_notification(telegram_id1, game_id, nick2, public_link)
             send_match_notification(telegram_id2, game_id, nick1, public_link)
-            logger.info(f"📨 Уведомления игрокам отправлены")
             
-            # 🔥 ПРОВЕРЯЕМ ПЕРВЫЙ МАТЧ ДЛЯ ОБОИХ ИГРОКОВ (+150 leadercoins)
             for pid in [player1_id, player2_id]:
                 cursor.execute("""
                     SELECT COUNT(*) FROM games 
@@ -2067,16 +2034,13 @@ def create_game():
                 """, (pid, pid))
                 games_count = cursor.fetchone()[0]
                 
-                if games_count == 1:  # Это первый мэтч!
+                if games_count == 1:
                     cursor.execute("""
                         UPDATE users 
                         SET leadercoins = COALESCE(leadercoins, 0) + 150
                         WHERE player_id = %s
-                        RETURNING telegram_id
                     """, (pid,))
-                    result = cursor.fetchone()
-                    if result:
-                        logger.info(f"🎉 Первый мэтч для игрока {pid}! +150 leadercoins")
+                    logger.info(f"🎉 Первый мэтч для игрока {pid}! +150 leadercoins")
             
             logger.info(f"✅ Игра {game_id} успешно создана!")
             
@@ -2086,12 +2050,11 @@ def create_game():
                 "chat_link": public_link,
                 "expires_in": 1800
             })
+            
     except AppError:
         raise
     except Exception as e:
         logger.error(f"❌ Ошибка create_game: {e}")
-        import traceback
-        logger.error(f"📋 Traceback: {traceback.format_exc()}")
         raise AppError(str(e), 500, "INTERNAL_ERROR")
 
 # ---------- ПОИСК ИГРОКОВ ----------
