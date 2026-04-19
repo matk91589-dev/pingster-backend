@@ -1991,7 +1991,7 @@ def create_game():
             create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
             topic_response = requests.post(create_topic_url, json={
                 "chat_id": FORUM_GROUP_ID,
-                "name": f"🎮 Игра #{game_id} | {nick1} & {nick2}",
+                "name": f"🎮 Мэтч #{game_id} | {nick1} & {nick2}",
                 "icon_color": 0x6FB9F0
             }, timeout=5)
             
