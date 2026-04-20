@@ -335,6 +335,42 @@ def validate_avatar_url(url: str) -> Tuple[bool, Optional[str]]:
         return False, "Invalid avatar URL format"
     return True, None
 
+# ---------- ОТЛАДКА: РУЧНОЕ ЗАКРЫТИЕ ТЕМ ----------
+@app.route('/api/debug/close-expired', methods=['GET'])
+def debug_close_expired():
+    """Ручное закрытие просроченных тем (для отладки)"""
+    try:
+        closed = 0
+        errors = []
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT telegram_chat_id FROM games 
+                WHERE expires_at < (NOW() AT TIME ZONE 'UTC') 
+                AND status = 'active'
+            """)
+            topics = cursor.fetchall()
+            
+            logger.info(f"🔧 [DEBUG] Найдено {len(topics)} тем для закрытия")
+            
+            for topic in topics:
+                topic_id = topic[0]
+                try:
+                    logger.info(f"🔧 [DEBUG] Закрываем тему {topic_id}")
+                    close_topic(topic_id)
+                    closed += 1
+                except Exception as e:
+                    errors.append({"topic_id": topic_id, "error": str(e)})
+                    
+        return jsonify({
+            "status": "ok", 
+            "closed": closed, 
+            "total_found": len(topics),
+            "errors": errors
+        })
+    except Exception as e:
+        logger.error(f"❌ [DEBUG] Ошибка: {e}")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
 # ============================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================
