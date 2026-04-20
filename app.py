@@ -622,24 +622,30 @@ def handle_500(error):
 def close_topic(topic_id: int):
     """Закрытие темы в Telegram форуме"""
     try:
-        requests.post(
+        logger.info(f"🔒 [close_topic] Закрываем тему {topic_id} в форуме {FORUM_GROUP_ID}")
+        
+        response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/closeForumTopic",
             json={"chat_id": FORUM_GROUP_ID, "message_thread_id": topic_id},
-            timeout=3
+            timeout=5
         )
-        with get_db_cursor() as cursor:
-            cursor.execute(
-                "UPDATE games SET status = 'closed' WHERE telegram_chat_id = %s",
-                (str(topic_id),)
-            )
-        logger.info(f"✅ Тема {topic_id} закрыта")
+        
+        if response.ok:
+            logger.info(f"✅ [close_topic] Тема {topic_id} закрыта")
+            with get_db_cursor() as cursor:
+                cursor.execute(
+                    "UPDATE games SET status = 'closed' WHERE telegram_chat_id = %s",
+                    (str(topic_id),)
+                )
+        else:
+            logger.error(f"❌ [close_topic] Ошибка API: {response.status_code} - {response.text}")
     except Exception as e:
-        logger.error(f"Ошибка закрытия темы: {e}")
+        logger.error(f"❌ [close_topic] Исключение: {e}")
 
 def background_worker():
-    """Фоновый процесс для закрытия просроченных игр"""
     logger.info("🚀 Фоновый поток запущен")
     while True:
+        logger.info("⏰ [ФОНОВЫЙ ПОТОК] Проверка просроченных тем...")  
         try:
             with get_db_cursor() as cursor:
                 cursor.execute("""
@@ -647,11 +653,13 @@ def background_worker():
                     WHERE expires_at < (NOW() AT TIME ZONE 'UTC') 
                     AND status = 'active'
                 """)
-                for topic in cursor.fetchall():
+                topics = cursor.fetchall()
+                logger.info(f"[ФОНОВЫЙ ПОТОК] Найдено тем: {len(topics)}")
+                for topic in topics:
                     close_topic(topic[0])
                     time.sleep(0.3)
         except Exception as e:
-            logger.error(f"Ошибка фонового процесса: {e}")
+            logger.error(f"❌ [ФОНОВЫЙ ПОТОК] Ошибка: {e}")
         time.sleep(60)
 
 def queue_cleaner_worker():
