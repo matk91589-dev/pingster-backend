@@ -680,9 +680,10 @@ def close_topic(topic_id: int):
 
 def background_worker():
     logger.info("🚀 Фоновый поток запущен")
+    
     while True:
-        logger.info("⏰ [ФОНОВЫЙ ПОТОК] Проверка просроченных тем...")  
         try:
+            logger.info("⏰ [ФОН] Проверка просроченных тем...")
             with get_db_cursor() as cursor:
                 cursor.execute("""
                     SELECT telegram_chat_id FROM games 
@@ -690,14 +691,22 @@ def background_worker():
                     AND status = 'active'
                 """)
                 topics = cursor.fetchall()
-                logger.info(f"[ФОНОВЫЙ ПОТОК] Найдено тем: {len(topics)}")
+                logger.info(f"📋 [ФОН] Найдено тем: {len(topics)}")
+                
                 for topic in topics:
-                    close_topic(topic[0])
-                    time.sleep(0.3)
+                    try:
+                        close_topic(topic[0])
+                        time.sleep(0.3)
+                    except Exception as e:
+                        logger.error(f"❌ [ФОН] Ошибка закрытия темы {topic[0]}: {e}")
+                        
         except Exception as e:
-            logger.error(f"❌ [ФОНОВЫЙ ПОТОК] Ошибка: {e}")
+            logger.error(f"❌ [ФОН] КРИТИЧЕСКАЯ ОШИБКА: {e}")
+            # Записываем в файл на всякий случай
+            with open("background_worker_errors.log", "a") as f:
+                f.write(f"{datetime.now()} - {e}\n")
+                
         time.sleep(60)
-
 def queue_cleaner_worker():
     """Очистка устаревших записей в очереди поиска"""
     logger.info("🧹 Очистка очереди запущена")
