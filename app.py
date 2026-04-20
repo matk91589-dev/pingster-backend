@@ -1977,6 +1977,21 @@ def create_game():
         logger.info(f"🎮 Создание игры для матча {match_id}")
         
         with get_db_cursor() as cursor:
+            # 🔥 ПРОВЕРЯЕМ, НЕ СОЗДАНА ЛИ УЖЕ ИГРА
+            cursor.execute("""
+                SELECT id, telegram_chat_link, status FROM games 
+                WHERE match_id = %s AND status = 'active'
+            """, (match_id,))
+            existing = cursor.fetchone()
+            if existing:
+                logger.info(f"🎮 Игра для матча {match_id} уже существует, возвращаем её")
+                return jsonify({
+                    "status": "ok",
+                    "game_id": existing[0],
+                    "chat_link": existing[1],
+                    "already_exists": True
+                })
+            
             match = None
             for i in range(5):
                 cursor.execute("""
@@ -2040,7 +2055,8 @@ def create_game():
             }, timeout=5)
             
             if not topic_response.ok:
-                cursor.execute("DELETE FROM games WHERE id = %s", (game_id,))
+                # 🔥 НЕ УДАЛЯЕМ, А СТАВИМ СТАТУС 'failed' — ID НЕ ПРЫГАЮТ!
+                cursor.execute("UPDATE games SET status = 'failed' WHERE id = %s", (game_id,))
                 logger.error(f"❌ Ошибка создания темы: {topic_response.text}")
                 raise AppError("Failed to create game topic", 500, "TELEGRAM_ERROR")
             
