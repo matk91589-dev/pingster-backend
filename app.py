@@ -2396,26 +2396,24 @@ def get_stats():
 # ---------- РЕПУТАЦИЯ (CALLBACK ОТ БОТА) ----------
 @app.route('/api/reputation/vote', methods=['POST'])
 def reputation_vote():
-    """Обработка голосов за репутацию от бота"""
     try:
         data = request.json
         if not data or 'callback_data' not in data:
             raise ValidationError("Missing callback_data")
         
         callback_data = data['callback_data']
-        message = data.get('message', {})
-        chat_id = message.get('chat', {}).get('id')
-        message_id = message.get('message_id')
+        logger.info(f"📥 Получен callback: {callback_data}")
         
         # Парсим callback_data: vote_up_12345_42 или vote_down_12345_42
-        # Формат: vote_{up/down}_{voter_telegram_id}_{match_id}
         parts = callback_data.split('_')
         if len(parts) != 4:
             return jsonify({"status": "error", "message": "Invalid callback_data"}), 400
         
         vote_type = parts[1]  # up или down
-        voter_telegram_id = parts[2]  # 👈 ТОТ, КТО ГОЛОСУЕТ
+        voter_telegram_id = parts[2]
         match_id = parts[3]
+        
+        logger.info(f"🗳 Голос: {vote_type} от {voter_telegram_id} за мэтч {match_id}")
         
         # 🔥 НАХОДИМ ТИММЕЙТА (того, КОМУ ставим оценку)
         with get_db_cursor() as cursor:
@@ -2447,42 +2445,14 @@ def reputation_vote():
         delta = 1 if vote_type == 'up' else -1
         update_reputation(teammate_telegram_id, delta)
         
-        logger.info(f"✅ Голос: {vote_type} | voter={voter_telegram_id} | target={teammate_telegram_id} | delta={delta}")
-        
-        # Обновляем сообщение в боте (убираем кнопки, показываем оценку)
-        if chat_id and message_id:
-            vote_emoji = "👍" if vote_type == 'up' else "👎"
-            new_text = message.get('text', '').replace('Оцените тиммейта:', f'✅ Вы оценили тиммейта: {vote_emoji}')
-            
-            # Получаем ссылку на чат из старого сообщения
-            chat_link = None
-            if message.get('reply_markup') and message['reply_markup'].get('inline_keyboard'):
-                for row in message['reply_markup']['inline_keyboard']:
-                    for btn in row:
-                        if btn.get('url'):
-                            chat_link = btn['url']
-                            break
-            
-            new_keyboard = {"inline_keyboard": []}
-            if chat_link:
-                new_keyboard["inline_keyboard"].append([{"text": "👉 Перейти в чат", "url": chat_link}])
-            
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
-                json={
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": new_text,
-                    "reply_markup": new_keyboard if new_keyboard["inline_keyboard"] else None
-                },
-                timeout=5
-            )
+        logger.info(f"✅ Голос обработан: target={teammate_telegram_id}, delta={delta}")
         
         return jsonify({"status": "ok"})
         
     except Exception as e:
-        logger.error(f"Ошибка reputation_vote: {e}")
+        logger.error(f"❌ Ошибка reputation_vote: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+        
 # ============================================
 # GRACEFUL SHUTDOWN
 # ============================================
