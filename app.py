@@ -1983,22 +1983,7 @@ def create_game():
         logger.info(f"🎮 Создание игры для матча {match_id}")
         
         with get_db_cursor() as cursor:
-            # 🔥 1. ПРОВЕРЯЕМ, НЕ СОЗДАНА ЛИ УЖЕ ИГРА (ДО INSERT!)
-            cursor.execute("""
-                SELECT id, telegram_chat_link, status FROM games 
-                WHERE match_id = %s AND status = 'active'
-            """, (match_id,))
-            existing = cursor.fetchone()
-            if existing:
-                logger.info(f"🎮 Игра для матча {match_id} уже существует, возвращаем её")
-                return jsonify({
-                    "status": "ok",
-                    "game_id": existing[0],
-                    "chat_link": existing[1],
-                    "already_exists": True
-                })
-            
-            # 🔥 2. ТОЛЬКО ЕСЛИ ИГРЫ НЕТ — ИЩЕМ МАТЧ
+            # 🔥 1. ИЩЕМ МАТЧ (сначала, чтобы не тратить ID зря)
             match = None
             for i in range(5):
                 cursor.execute("""
@@ -2016,7 +2001,7 @@ def create_game():
             player1_id, player2_id, mode = match
             logger.info(f"👥 Игроки: {player1_id} и {player2_id}, режим: {mode}")
             
-            # 🔥 3. ПОЛУЧАЕМ ДАННЫЕ ИГРОКОВ
+            # 🔥 2. ПОЛУЧАЕМ ДАННЫЕ ИГРОКОВ
             cursor.execute("""
                 SELECT u.telegram_id, p.nick 
                 FROM users u 
@@ -2039,15 +2024,55 @@ def create_game():
             telegram_id1, nick1 = user1
             telegram_id2, nick2 = user2
             
-            # 🔥 4. ТЕПЕРЬ ДЕЛАЕМ INSERT — ID ПОТРАТИТСЯ ТОЛЬКО ЕСЛИ ВСЁ ОК
+            # 🔥 3. ПРОВЕРЯЕМ, НЕ СОЗДАНА ЛИ УЖЕ АКТИВНАЯ ИГРА
+            cursor.execute("""
+                SELECT id, telegram_chat_link FROM games 
+                WHERE match_id = %s AND status = 'active'
+            """, (match_id,))
+            existing_active = cursor.fetchone()
+            if existing_active:
+                logger.info(f"🎮 Активная игра для матча {match_id} уже существует")
+                return jsonify({
+                    "status": "ok",
+                    "game_id": existing_active[0],
+                    "chat_link": existing_active[1],
+                    "already_exists": True
+                })
+            
+            # 🔥 4. ПРОБУЕМ ВСТАВИТЬ ЗАПИСЬ С ON CONFLICT (если дубль — просто вернём существующую)
             expires_at = datetime.utcnow() + timedelta(minutes=30)
             cursor.execute("""
                 INSERT INTO games (match_id, player1_id, player2_id, status, created_at, expires_at)
                 VALUES (%s, %s, %s, 'pending', (NOW() AT TIME ZONE 'UTC'), %s)
+                ON CONFLICT (match_id) DO NOTHING
                 RETURNING id
             """, (match_id, player1_id, player2_id, expires_at))
-            game_id = cursor.fetchone()[0]
-            logger.info(f"📝 Создана запись в БД, game_id = {game_id}")
+            
+            game_id_row = cursor.fetchone()
+            
+            if not game_id_row:
+                # 🔥 Игра уже существует (но может быть failed) — получаем её и обновляем если нужно
+                cursor.execute("""
+                    SELECT id, telegram_chat_link, status FROM games WHERE match_id = %s
+                """, (match_id,))
+                existing = cursor.fetchone()
+                
+                if existing[2] == 'active':
+                    # Уже активна — возвращаем
+                    logger.info(f"🎮 Игра уже активна, возвращаем существующую")
+                    return jsonify({
+                        "status": "ok",
+                        "game_id": existing[0],
+                        "chat_link": existing[1],
+                        "already_exists": True
+                    })
+                else:
+                    # Была failed или pending — используем этот ID для создания темы
+                    game_id = existing[0]
+                    logger.info(f"🔄 Используем существующую запись game_id = {game_id} (статус: {existing[2]})")
+            else:
+                game_id = game_id_row[0]
+                logger.info(f"📝 Создана новая запись в БД, game_id = {game_id}")
             
             # 🔥 5. СОЗДАЁМ ТЕМУ В ФОРУМЕ
             import requests
@@ -2063,7 +2088,6 @@ def create_game():
             }, timeout=5)
             
             if not topic_response.ok:
-                # 🔥 НЕ УДАЛЯЕМ, А СТАВИМ СТАТУС 'failed' — ID НЕ ПРЫГАЮТ!
                 cursor.execute("UPDATE games SET status = 'failed' WHERE id = %s", (game_id,))
                 logger.error(f"❌ Ошибка создания темы: {topic_response.text}")
                 raise AppError("Failed to create game topic", 500, "TELEGRAM_ERROR")
@@ -2075,7 +2099,7 @@ def create_game():
             clean_chat_id = str(FORUM_GROUP_ID).replace('-100', '')
             public_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
             
-            # 🔥 6. ОБНОВЛЯЕМ ЗАПИСЬ
+            # 🔥 6. ОБНОВЛЯЕМ ЗАПИСЬ ДО АКТИВНОЙ
             cursor.execute("""
                 UPDATE games 
                 SET telegram_chat_id = %s, 
