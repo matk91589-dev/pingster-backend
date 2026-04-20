@@ -1311,6 +1311,9 @@ def check_match():
                         opponent_steam_link = match.get('player1_steam_link') or profile.get('steam_link') or "Не указана"
                         opponent_faceit_link = match.get('player1_faceit_link') or profile.get('faceit_link') or "Не указана"
                     
+                    # 🔥 СЧИТАЕМ ОСТАВШЕЕСЯ ВРЕМЯ НА СЕРВЕРЕ!
+                    time_left = max(0, int((match['expires_at'] - datetime.utcnow()).total_seconds()))
+                    
                     return jsonify({
                         "match_found": True,
                         "match_id": match['id'],
@@ -1327,7 +1330,8 @@ def check_match():
                             "avatar": profile.get('avatar'),
                             "comment": opponent_comment
                         },
-                        "expires_at": match['expires_at'].isoformat() + "Z"
+                        "expires_at": match['expires_at'].isoformat() + "Z",
+                        "time_left": time_left  # 🔥 ДОБАВЛЕНО!
                     })
             
             # Ищем текущего игрока в очереди
@@ -1415,6 +1419,7 @@ def check_match():
             logger.info(f"✅ Найден кандидат: player_id={best['player_id']}, score={best_score}, rank={best['rank']}, bucket={best['rating_bucket']}")
             
             expires_at = datetime.utcnow() + timedelta(seconds=40)
+            time_left = 40  # 🔥 ДЛЯ НОВОГО МАТЧА
             
             # Сохраняем матч
             cursor.execute("""
@@ -1478,9 +1483,10 @@ def check_match():
                 "match_id": match_id,
                 "opponent": opponent_data,
                 "expires_at": expires_at.isoformat() + "Z",
+                "time_left": time_left,  # 🔥 ДОБАВЛЕНО!
                 "in_queue": True,
-                "search_range": search_range,  # 🔥 Чтобы фронт понимал, в каком диапазоне искали
-                "compatibility_score": best_score  # 🔥 Показываем насколько хорошо подходит (меньше = лучше)
+                "search_range": search_range,
+                "compatibility_score": best_score
             })
             
     except AppError:
