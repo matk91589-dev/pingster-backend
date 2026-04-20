@@ -295,16 +295,11 @@ def handle_reputation_vote(call):
     message = call.message
     
     try:
+        # 🔥 ОТПРАВЛЯЕМ ТОЛЬКО ТО, ЧТО НУЖНО API!
         response = requests.post(
             f'{API_URL}/reputation/vote',
             json={
-                'callback_data': callback_data,
-                'message': {
-                    'message_id': message.message_id,
-                    'chat': {'id': user_id},
-                    'text': message.text,
-                    'reply_markup': message.reply_markup.to_dict() if message.reply_markup else None
-                }
+                'callback_data': callback_data
             },
             timeout=10
         )
