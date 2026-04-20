@@ -24,12 +24,27 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 
 # Хранилище сообщений
-user_messages = {}  # {user_id: {'start': {'user': msg_id, 'bot': msg_id}, 'support': {...}}}
-temp_messages = {}  # для форума
+user_messages = {}
+temp_messages = {}
 
 # ============================================
 # ФУНКЦИИ
 # ============================================
+
+def check_server_awake():
+    """Проверяет, проснулся ли сервер"""
+    try:
+        response = requests.get(f'{API_URL.replace("/api", "")}/health', timeout=5)
+        return response.status_code == 200
+    except:
+        return False
+
+def wake_up_server():
+    """Отправляет пинг для пробуждения сервера"""
+    try:
+        requests.get(f'{API_URL.replace("/api", "")}/health', timeout=3)
+    except:
+        pass
 
 def delete_message_later(chat_id, message_id, delay=30):
     """Удаляет сообщение через указанную задержку"""
@@ -102,11 +117,26 @@ def send_forum_invite(user_id):
         "Для начала нужно вступить в наш форум:\n\n"
         "1. Нажми **«Вступить в форум»**\n"
         "2. Нажми **«Я вступил, продолжить»**\n\n"
-        "После этого откроется главное меню! ",
+        "После этого откроется главное меню!",
         parse_mode='Markdown',
         reply_markup=markup
     )
     save_temp_message(user_id, msg.message_id)
+
+def register_user(telegram_id, username):
+    """Регистрирует пользователя в API"""
+    try:
+        response = requests.post(
+            f'{API_URL}/user/init',
+            json={'telegram_id': telegram_id, 'username': username},
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('player_id')
+    except:
+        pass
+    return None
 
 # ============================================
 # ОБРАБОТЧИКИ КОМАНД
@@ -121,24 +151,26 @@ def start(message):
     # Удаляем старые сообщения start
     delete_old_command(telegram_id, 'start')
     
+    # 🔥 ПРОВЕРЯЕМ СЕРВЕР
+    if not check_server_awake():
+        # Будим сервер
+        wake_up_server()
+        bot_msg = bot.send_message(
+            telegram_id,
+            " **загрузка сервера**\n\n"
+            "Пожалуйста, подождите 5 секунд и нажмите /start снова.",
+            parse_mode='Markdown'
+        )
+        save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
+        return
+    
     # Проверяем форум
     if not is_user_in_forum(telegram_id):
         send_forum_invite(telegram_id)
         return
     
-    # Регистрируем
-    player_id = None
-    try:
-        response = requests.post(
-            f'{API_URL}/user/init',
-            json={'telegram_id': telegram_id, 'username': username},
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            player_id = data.get('player_id')
-    except:
-        pass
+    # Регистрируем пользователя
+    player_id = register_user(telegram_id, username)
     
     text = f"***@{username}***\n"
     text += f"Добро пожаловать в Pingster!\n\n"
@@ -160,38 +192,33 @@ def support_command(message):
     telegram_id = message.from_user.id
     user_msg_id = message.message_id
     
-    # Удаляем старые сообщения support
     delete_old_command(telegram_id, 'support')
     
-    text = f" **Поддержка Pingster**\n\n👇 написать в поддержку"
+    text = f"📞 **Поддержка Pingster**\n\n👇 написать в поддержку"
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(
-        text="поддержка",
+        text="💬 ПОДДЕРЖКА",
         url=f"https://t.me/{SUPPORT_USERNAME}"
     ))
     
     bot_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
     save_command_message(telegram_id, 'support', user_msg_id, bot_msg.message_id)
     
-    # Запускаем таймер на удаление новых сообщений через 30 секунд
     threading.Thread(target=delete_message_later, args=(telegram_id, user_msg_id, 30), daemon=True).start()
     threading.Thread(target=delete_message_later, args=(telegram_id, bot_msg.message_id, 30), daemon=True).start()
 
 # ============================================
-# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ ОТ ПОЛЬЗОВАТЕЛЯ
+# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
 # ============================================
 
 @bot.message_handler(func=lambda message: True)
 def delete_unknown_messages(message):
-    """Удаляет все сообщения от пользователя, которые не являются командами"""
     telegram_id = message.from_user.id
     
-    # Пропускаем команды (они уже обработаны)
     if message.text and message.text.startswith('/'):
         return
     
-    # Удаляем любое другое сообщение от пользователя
     try:
         bot.delete_message(telegram_id, message.message_id)
         print(f"🗑 Удалено сообщение от {telegram_id}")
@@ -213,32 +240,13 @@ def check_forum_callback(call):
         print(f"✅ {user_id} в форуме!")
         delete_temp_message(user_id)
         
-        # Удаляем сообщение с кнопками
         try:
             bot.delete_message(user_id, call.message.message_id)
-            print(f"🗑 Сообщение с кнопками удалено")
-        except Exception as e:
-            print(f"⚠️ Не удалось удалить сообщение: {e}")
+        except:
+            pass
         
-        # Регистрируем пользователя
-        player_id = None
-        try:
-            print(f"📡 Регистрация пользователя в API...")
-            response = requests.post(
-                f'{API_URL}/user/init',
-                json={'telegram_id': user_id, 'username': username},
-                timeout=10
-            )
-            if response.status_code == 200:
-                data = response.json()
-                player_id = data.get('player_id')
-                print(f"✅ Пользователь зарегистрирован, player_id: {player_id}")
-            else:
-                print(f"⚠️ Ошибка API: {response.status_code}")
-        except Exception as e:
-            print(f"❌ Ошибка регистрации: {e}")
+        player_id = register_user(user_id, username)
         
-        # Формируем приветственное сообщение
         text = f"***@{username}***\n"
         text += f"Добро пожаловать в Pingster!\n\n"
         text += f"👤 твой игровой id: {player_id or '—'}\n\n"
@@ -251,36 +259,21 @@ def check_forum_callback(call):
             web_app=WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={user_id}')
         ))
         
-        # Отправляем меню
         try:
             new_msg = bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=markup)
             print(f"✅ Меню отправлено, msg_id: {new_msg.message_id}")
             
-            # Сохраняем в user_messages
             if user_id not in user_messages:
                 user_messages[user_id] = {}
-            user_messages[user_id]['start'] = {
-                'user': 0,  # Нет сообщения пользователя
-                'bot': new_msg.message_id
-            }
-        except Exception as e:
-            print(f"❌ Ошибка отправки меню с Markdown: {e}")
-            # Пробуем без Markdown
-            try:
-                plain_text = f"@{username}\nДобро пожаловать в Pingster!\n\n👤 твой игровой id: {player_id or '—'}\n\n👇 Нажми кнопку ниже, чтобы начать:"
-                new_msg = bot.send_message(user_id, plain_text, reply_markup=markup)
-                print(f"✅ Меню отправлено (plain text)")
-                
-                if user_id not in user_messages:
-                    user_messages[user_id] = {}
-                user_messages[user_id]['start'] = {
-                    'user': 0,
-                    'bot': new_msg.message_id
-                }
-            except Exception as e2:
-                print(f"❌ Полная ошибка отправки: {e2}")
+            user_messages[user_id]['start'] = {'user': 0, 'bot': new_msg.message_id}
+        except:
+            plain_text = f"@{username}\nДобро пожаловать в Pingster!\n\n👤 твой игровой id: {player_id or '—'}\n\n👇 Нажми кнопку ниже, чтобы начать:"
+            new_msg = bot.send_message(user_id, plain_text, reply_markup=markup)
+            
+            if user_id not in user_messages:
+                user_messages[user_id] = {}
+            user_messages[user_id]['start'] = {'user': 0, 'bot': new_msg.message_id}
     else:
-        print(f"❌ {user_id} НЕ в форуме!")
         bot.answer_callback_query(
             call.id,
             "❌ Ты ещё не в форуме! Сначала нажми «Вступить в форум»",
@@ -289,27 +282,26 @@ def check_forum_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote_'))
 def handle_reputation_vote(call):
-    """Обрабатывает голоса за репутацию — эти сообщения НЕ УДАЛЯЕМ!"""
-    user_id = call.from_user.id
+    """Обрабатывает голоса за репутацию"""
     callback_data = call.data
-    message = call.message
+    print(f"🗳 Получен голос: {callback_data}")
     
     try:
-        # 🔥 ОТПРАВЛЯЕМ ТОЛЬКО ТО, ЧТО НУЖНО API!
         response = requests.post(
             f'{API_URL}/reputation/vote',
-            json={
-                'callback_data': callback_data
-            },
+            json={'callback_data': callback_data},
             timeout=10
         )
         
         if response.status_code == 200:
             bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
+            print(f"✅ Голос обработан: {callback_data}")
         else:
             bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
-    except:
+            print(f"❌ Ошибка API: {response.status_code}")
+    except Exception as e:
         bot.answer_callback_query(call.id, "❌ Ошибка соединения")
+        print(f"❌ Ошибка отправки голоса: {e}")
 
 # ============================================
 # ЗАПУСК
@@ -319,10 +311,8 @@ if __name__ == '__main__':
     print(f"📡 API: {API_URL}")
     print(f"🌐 FRONTEND: {FRONTEND_URL}")
     print(f"📞 Поддержка: @{SUPPORT_USERNAME}")
-    print("🗑 Непонятные сообщения удаляются сразу")
-    print("🔄 Новый /start заменяет старый")
-    print("⏱ /support удаляется через 30с")
-    print("👍 Сообщения с оценкой тиммейта НЕ удаляются")
+    print("⏳ Проверка сервера при /start")
+    print("👍 Репутация: упрощённая отправка")
     
     bot.remove_webhook()
     
@@ -330,5 +320,5 @@ if __name__ == '__main__':
         try:
             bot.polling(none_stop=True, interval=0, timeout=20)
         except Exception as e:
-            print(f"❌ Ошибка: {e}")
+            print(f"❌ Ошибка polling: {e}")
             time.sleep(5)
