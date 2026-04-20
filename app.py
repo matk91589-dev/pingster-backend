@@ -2409,9 +2409,12 @@ def reputation_vote():
         callback_data = data['callback_data']
         logger.info(f"📥 Получен callback: {callback_data}")
         
-        # Парсим callback_data: vote_up_12345_42 или vote_down_12345_42
-        parts = callback_data.split('_')
+        # 🔥 Новый формат: vote:up:12345:42
+        parts = callback_data.split(':')
+        logger.info(f"🔍 Parts: {parts}")
+        
         if len(parts) != 4:
+            logger.error(f"❌ Неверный формат: {parts}")
             return jsonify({"status": "error", "message": "Invalid callback_data"}), 400
         
         vote_type = parts[1]  # up или down
@@ -2420,37 +2423,38 @@ def reputation_vote():
         
         logger.info(f"🗳 Голос: {vote_type} от {voter_telegram_id} за мэтч {match_id}")
         
-        # 🔥 НАХОДИМ ТИММЕЙТА (того, КОМУ ставим оценку)
+        # 🔥 НАХОДИМ ТИММЕЙТА
         with get_db_cursor() as cursor:
             cursor.execute("""
-                SELECT player1_id, player2_id 
-                FROM matches 
-                WHERE id = %s
+                SELECT player1_id, player2_id FROM matches WHERE id = %s
             """, (match_id,))
             match = cursor.fetchone()
             
             if not match:
+                logger.error(f"❌ Матч {match_id} не найден")
                 return jsonify({"status": "error", "message": "Match not found"}), 404
             
-            # Находим telegram_id тиммейта (не голосующего)
+            # Находим telegram_id тиммейта
             cursor.execute("""
                 SELECT telegram_id FROM users WHERE player_id IN (%s, %s)
             """, (match['player1_id'], match['player2_id']))
             players = cursor.fetchall()
-            
             player_ids = [str(p[0]) for p in players]
             
+            logger.info(f"📋 Игроки в матче: {player_ids}")
+            
             if voter_telegram_id not in player_ids:
+                logger.error(f"❌ Голосующий {voter_telegram_id} не в матче")
                 return jsonify({"status": "error", "message": "User not in match"}), 403
             
-            # Берем другого игрока (тиммейта)
             teammate_telegram_id = player_ids[0] if player_ids[1] == voter_telegram_id else player_ids[1]
+            logger.info(f"🎯 Тиммейт: {teammate_telegram_id}")
         
-        # Обновляем репутацию (rating) ТИММЕЙТА
+        # Обновляем репутацию
         delta = 1 if vote_type == 'up' else -1
         update_reputation(teammate_telegram_id, delta)
         
-        logger.info(f"✅ Голос обработан: target={teammate_telegram_id}, delta={delta}")
+        logger.info(f"✅ Репутация обновлена: target={teammate_telegram_id}, delta={delta}")
         
         return jsonify({"status": "ok"})
         
