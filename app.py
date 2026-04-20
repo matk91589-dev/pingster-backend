@@ -2017,7 +2017,7 @@ def create_game():
             telegram_id2, nick2 = user2
             
             # Создаём запись в games
-            expires_at = datetime.utcnow() + timedelta(minutes=30)
+            expires_at = datetime.utcnow() + timedelta(minutes=5)
             cursor.execute("""
                 INSERT INTO games (match_id, player1_id, player2_id, status, created_at, expires_at)
                 VALUES (%s, %s, %s, 'pending', (NOW() AT TIME ZONE 'UTC'), %s)
@@ -2484,9 +2484,6 @@ if db_pool is None:
 application = app
 app = app
 
-# ============================================
-# ЗАПУСК ДЛЯ РАЗРАБОТКИ
-# ============================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
@@ -2499,17 +2496,20 @@ if __name__ == '__main__':
     print(f"✅ Репутация: включена")
     print("=" * 50)
     
-    # Запускаем фоновые потоки
-    bg_thread = threading.Thread(target=background_worker, daemon=True)
+    # 🔥 ЗАПУСКАЕМ ПОТОКИ КАК НЕ-DAEMON (чтобы точно работали)
+    bg_thread = threading.Thread(target=background_worker)
+    bg_thread.daemon = False  # 🔥 ВАЖНО!
     bg_thread.start()
     
-    clean_thread = threading.Thread(target=queue_cleaner_worker, daemon=True)
+    clean_thread = threading.Thread(target=queue_cleaner_worker)
+    clean_thread.daemon = False
     clean_thread.start()
     
-    online_thread = threading.Thread(target=online_cleaner_worker, daemon=True)
+    online_thread = threading.Thread(target=online_cleaner_worker)
+    online_thread.daemon = False
     online_thread.start()
     
-    print("✅ Фоновые процессы запущены")
+    print("✅ Фоновые процессы запущены (не-daemon)")
     
-    # Запускаем Flask (только для разработки)
+    # Запускаем Flask
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
