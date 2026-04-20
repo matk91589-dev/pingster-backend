@@ -1983,7 +1983,7 @@ def create_game():
         logger.info(f"🎮 Создание игры для матча {match_id}")
         
         with get_db_cursor() as cursor:
-            # 🔥 ПРОВЕРЯЕМ, НЕ СОЗДАНА ЛИ УЖЕ ИГРА
+            # 🔥 1. ПРОВЕРЯЕМ, НЕ СОЗДАНА ЛИ УЖЕ ИГРА (ДО INSERT!)
             cursor.execute("""
                 SELECT id, telegram_chat_link, status FROM games 
                 WHERE match_id = %s AND status = 'active'
@@ -1998,6 +1998,7 @@ def create_game():
                     "already_exists": True
                 })
             
+            # 🔥 2. ТОЛЬКО ЕСЛИ ИГРЫ НЕТ — ИЩЕМ МАТЧ
             match = None
             for i in range(5):
                 cursor.execute("""
@@ -2015,6 +2016,7 @@ def create_game():
             player1_id, player2_id, mode = match
             logger.info(f"👥 Игроки: {player1_id} и {player2_id}, режим: {mode}")
             
+            # 🔥 3. ПОЛУЧАЕМ ДАННЫЕ ИГРОКОВ
             cursor.execute("""
                 SELECT u.telegram_id, p.nick 
                 FROM users u 
@@ -2037,7 +2039,7 @@ def create_game():
             telegram_id1, nick1 = user1
             telegram_id2, nick2 = user2
             
-            # Создаём запись в games
+            # 🔥 4. ТЕПЕРЬ ДЕЛАЕМ INSERT — ID ПОТРАТИТСЯ ТОЛЬКО ЕСЛИ ВСЁ ОК
             expires_at = datetime.utcnow() + timedelta(minutes=30)
             cursor.execute("""
                 INSERT INTO games (match_id, player1_id, player2_id, status, created_at, expires_at)
@@ -2047,7 +2049,7 @@ def create_game():
             game_id = cursor.fetchone()[0]
             logger.info(f"📝 Создана запись в БД, game_id = {game_id}")
             
-            # Создаём тему в форуме
+            # 🔥 5. СОЗДАЁМ ТЕМУ В ФОРУМЕ
             import requests
             create_topic_url = f"https://api.telegram.org/bot{BOT_TOKEN}/createForumTopic"
             topic_name = f"🎮 Мэтч #{game_id} | {nick1} & {nick2}"
@@ -2073,6 +2075,7 @@ def create_game():
             clean_chat_id = str(FORUM_GROUP_ID).replace('-100', '')
             public_link = f"https://t.me/c/{clean_chat_id}/{topic_id}"
             
+            # 🔥 6. ОБНОВЛЯЕМ ЗАПИСЬ
             cursor.execute("""
                 UPDATE games 
                 SET telegram_chat_id = %s, 
@@ -2099,9 +2102,11 @@ def create_game():
                 timeout=3
             )
             
+            # 🔥 7. ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ
             send_match_notification(telegram_id1, game_id, nick2, public_link)
             send_match_notification(telegram_id2, game_id, nick1, public_link)
             
+            # 🔥 8. ПРОВЕРЯЕМ ПЕРВЫЙ МЭТЧ
             for pid in [player1_id, player2_id]:
                 cursor.execute("""
                     SELECT COUNT(*) FROM games 
