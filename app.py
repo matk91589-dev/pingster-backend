@@ -2017,7 +2017,7 @@ def create_game():
             telegram_id2, nick2 = user2
             
             # Создаём запись в games
-            expires_at = datetime.utcnow() + timedelta(minutes=5)
+            expires_at = datetime.utcnow() + timedelta(minutes=30)
             cursor.execute("""
                 INSERT INTO games (match_id, player1_id, player2_id, status, created_at, expires_at)
                 VALUES (%s, %s, %s, 'pending', (NOW() AT TIME ZONE 'UTC'), %s)
