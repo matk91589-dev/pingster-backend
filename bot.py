@@ -280,7 +280,7 @@ def check_forum_callback(call):
             show_alert=True
         )
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('vote_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
 def handle_reputation_vote(call):
     """Обрабатывает голоса за репутацию"""
     callback_data = call.data
