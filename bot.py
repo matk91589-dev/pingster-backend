@@ -283,12 +283,13 @@ def check_forum_callback(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
 def handle_reputation_vote(call):
     callback_data = call.data
-    user_id = call.from_user.id
     message = call.message
     
     vote_type = "👍" if ":up:" in callback_data else "👎"
     
     print(f"🗳 Получен голос: {callback_data}")
+    print(f"📌 CHAT ID: {message.chat.id}")
+    print(f"📌 MESSAGE THREAD ID: {message.message_thread_id}")
     
     # 🔥 1. СРАЗУ ОТВЕЧАЕМ НА CALLBACK
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
@@ -313,67 +314,29 @@ def handle_reputation_vote(call):
                     chat_link = btn.url
                     break
     
-    # 🔥 4. НОВЫЙ ТЕКСТ
-    new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
+    # 🔥 4. НОВЫЙ ТЕКСТ (с пробелом в конце для гарантии)
+    new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type} "
     
-    # 🔥 5. ПРОБУЕМ ОТРЕДАКТИРОВАТЬ СООБЩЕНИЕ
+    # 🔥 5. РЕДАКТИРУЕМ СООБЩЕНИЕ (С ПРАВИЛЬНЫМ chat_id!)
     try:
-        # Создаём клавиатуру ТОЛЬКО с кнопкой чата
         new_markup = None
         if chat_link:
             new_markup = InlineKeyboardMarkup()
             new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
         
         bot.edit_message_text(
-            chat_id=user_id,
+            chat_id=message.chat.id,  # 🔥 ВОТ ОНО! РАНЬШЕ БЫЛО user_id!
             message_id=message.message_id,
+            message_thread_id=message.message_thread_id,  # 🔥 ДЛЯ ФОРУМА!
             text=new_text,
             reply_markup=new_markup,
             parse_mode='HTML'
         )
-        print(f"✅ Сообщение отредактировано")
-    except Exception as e:
-        print(f"⚠️ edit_message_text не сработал: {e}")
+        print(f"✅ Сообщение отредактировано!")
         
-        # 🔥 ПЛАН Б: ТОЛЬКО УБИРАЕМ КЛАВИАТУРУ
-        try:
-            bot.edit_message_reply_markup(
-                chat_id=user_id,
-                message_id=message.message_id,
-                reply_markup=None  # Полностью убираем ВСЕ кнопки
-            )
-            print(f"✅ Клавиатура убрана")
-            
-            # И отправляем новое сообщение с текстом
-            new_markup = None
-            if chat_link:
-                new_markup = InlineKeyboardMarkup()
-                new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-            
-            bot.send_message(
-                chat_id=user_id,
-                text=new_text,
-                reply_markup=new_markup,
-                parse_mode='HTML'
-            )
-            print(f"✅ Отправлено новое сообщение")
-            
-        except Exception as e2:
-            print(f"❌ План Б тоже не сработал: {e2}")
-            
-            # 🔥 ПЛАН В: Отправляем новое сообщение (старое останется с кнопками)
-            new_markup = None
-            if chat_link:
-                new_markup = InlineKeyboardMarkup()
-                new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-            
-            bot.send_message(
-                chat_id=user_id,
-                text=new_text,
-                reply_markup=new_markup,
-                parse_mode='HTML'
-            )
-            print(f"✅ Отправлено новое сообщение (старое осталось)")
+    except Exception as e:
+        print(f"❌ Ошибка редактирования: {e}")
+
 # ============================================
 # ЗАПУСК
 # ============================================
