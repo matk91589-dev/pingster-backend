@@ -298,7 +298,7 @@ def handle_reputation_vote(call):
         )
         
         if response.status_code == 200:
-            # 🔥 СОХРАНЯЕМ КНОПКУ «ПЕРЕЙТИ В ЧАТ»
+            # 🔥 НАХОДИМ ССЫЛКУ НА ЧАТ
             chat_link = None
             if message.reply_markup and message.reply_markup.inline_keyboard:
                 for row in message.reply_markup.inline_keyboard:
@@ -307,6 +307,7 @@ def handle_reputation_vote(call):
                             chat_link = btn.url
                             break
             
+            # 🔥 СОЗДАЁМ НОВУЮ КЛАВИАТУРУ ТОЛЬКО С КНОПКОЙ ЧАТА
             new_markup = None
             if chat_link:
                 new_markup = InlineKeyboardMarkup()
@@ -315,34 +316,20 @@ def handle_reputation_vote(call):
             # 🔥 МЕНЯЕМ ТЕКСТ
             new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
             
-            try:
-                bot.edit_message_text(
-                    chat_id=user_id,
-                    message_id=message.message_id,
-                    text=new_text,
-                    reply_markup=new_markup
-                )
-                print(f"✅ Сообщение обновлено, кнопки 👍/👎 убраны")
-            except Exception as e:
-                print(f"❌ Ошибка обновления сообщения: {e}")
-                # Пробуем только текст обновить
-                try:
-                    bot.edit_message_text(
-                        chat_id=user_id,
-                        message_id=message.message_id,
-                        text=new_text
-                    )
-                except:
-                    pass
-            
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message.message_id,
+                text=new_text,
+                reply_markup=new_markup  # 🔥 Оставляем только кнопку чата!
+            )
             bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-            print(f"✅ Голос обработан: {vote_type}")
+            print(f"✅ Голос обработан, кнопки 👍/👎 убраны, кнопка чата осталась")
         else:
             bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
-            print(f"❌ Ошибка API: {response.status_code}")
     except Exception as e:
         bot.answer_callback_query(call.id, "❌ Ошибка соединения")
-        print(f"❌ Ошибка отправки голоса: {e}")
+        print(f"❌ Ошибка: {e}")
+
 # ============================================
 # ЗАПУСК
 # ============================================
