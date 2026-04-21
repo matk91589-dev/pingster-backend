@@ -290,10 +290,10 @@ def handle_reputation_vote(call):
     
     print(f"🗳 Получен голос: {callback_data}")
     
-    # 🔥 1. СНАЧАЛА ОТВЕЧАЕМ НА CALLBACK (чтобы убрать "часики" на кнопке)
+    # 🔥 1. СРАЗУ ОТВЕЧАЕМ НА CALLBACK
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
     
-    # 🔥 2. ОТПРАВЛЯЕМ В API (в фоне, результат не важен для UX)
+    # 🔥 2. ОТПРАВЛЯЕМ В API (в фоне)
     try:
         requests.post(
             f'{API_URL}/reputation/vote',
@@ -301,15 +301,12 @@ def handle_reputation_vote(call):
             timeout=5
         )
         print(f"✅ Голос отправлен в API")
-    except:
-        print(f"⚠️ API не ответил, но репутация может обновиться позже")
+    except Exception as e:
+        print(f"⚠️ API не ответил: {e}")
     
-    # 🔥 3. ГАРАНТИРОВАННО УБИРАЕМ КНОПКИ (меняем текст и клавиатуру)
+    # 🔥 3. МЕНЯЕМ ТЕКСТ И УБИРАЕМ КНОПКИ 👍/👎
     try:
-        # Новый текст
-        new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы уже оценили игрока: {vote_type}"
-        
-        # Оставляем только кнопку чата
+        # Находим ссылку на чат
         chat_link = None
         if message.reply_markup and message.reply_markup.inline_keyboard:
             for row in message.reply_markup.inline_keyboard:
@@ -318,36 +315,44 @@ def handle_reputation_vote(call):
                         chat_link = btn.url
                         break
         
+        # 🔥 СОЗДАЁМ НОВУЮ КЛАВИАТУРУ ТОЛЬКО С КНОПКОЙ ЧАТА
         new_markup = None
         if chat_link:
             new_markup = InlineKeyboardMarkup()
             new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
         
-        # Редактируем сообщение
+        # 🔥 НОВЫЙ ТЕКСТ (полностью пересобираем, а не replace)
+        new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
+        
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message.message_id,
             text=new_text,
-            reply_markup=new_markup
+            reply_markup=new_markup,
+            parse_mode='HTML'  # 🔥 Используем HTML вместо Markdown
         )
-        print(f"✅ Кнопки убраны, текст изменён")
+        print(f"✅ Сообщение отредактировано: '{new_text}'")
         
     except Exception as e:
-        print(f"⚠️ Не удалось отредактировать: {e}")
-        # ПРОБУЕМ ТОЛЬКО УБРАТЬ КЛАВИАТУРУ
+        print(f"❌ Ошибка редактирования: {e}")
+        # Пробуем без клавиатуры
         try:
-            bot.edit_message_reply_markup(
+            new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
+            bot.edit_message_text(
                 chat_id=user_id,
                 message_id=message.message_id,
-                reply_markup=None  # Полностью убираем все кнопки
+                text=new_text,
+                parse_mode='HTML'
             )
-            print(f"✅ Клавиатура убрана")
-        except:
-            # Если совсем никак - отправляем новое сообщение
+            print(f"✅ Текст изменён (без клавиатуры)")
+        except Exception as e2:
+            print(f"❌ Полная ошибка: {e2}")
+            # Отправляем новое сообщение
             try:
                 bot.send_message(
                     chat_id=user_id,
-                    text=f"✅ Вы уже оценили игрока: {vote_type}"
+                    text=f"✅ Вы оценили тиммейта: {vote_type}",
+                    reply_markup=new_markup
                 )
                 print(f"✅ Отправлено новое сообщение")
             except:
