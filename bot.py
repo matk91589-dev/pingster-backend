@@ -285,15 +285,17 @@ def handle_reputation_vote(call):
     callback_data = call.data
     message = call.message
     user_id = call.from_user.id
+    chat_id = message.chat.id
+    message_id = message.message_id
 
     vote_type = "👍" if ":up:" in callback_data else "👎"
 
     print(f"🗳 Получен голос: {callback_data}")
 
-    # 1. Ответ
+    # 1. Сразу отвечаем на callback
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
 
-    # 2. API
+    # 2. API запрос в фоне (не блокируем)
     try:
         requests.post(
             f'{API_URL}/reputation/vote',
@@ -303,35 +305,46 @@ def handle_reputation_vote(call):
     except Exception as e:
         print(f"❌ Ошибка API: {e}")
 
-    # 3. чат ссылка
+    # 3. Сохраняем ссылку на чат
     chat_link = None
     if message.reply_markup:
         for row in message.reply_markup.inline_keyboard:
             for btn in row:
                 if btn.url:
                     chat_link = btn.url
+                    break
+            if chat_link:
+                break
 
-    # 4. удаление
+    # 4. Создаём новую клавиатуру
+    new_markup = InlineKeyboardMarkup()
+    if chat_link:
+        new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+
+    # 5. Удаляем старое сообщение
     try:
-        bot.delete_message(
-            chat_id=message.chat.id,
-            message_id=message.message_id
-        )
+        bot.delete_message(chat_id, message_id)
+        print(f"🗑 Старое сообщение удалено")
     except Exception as e:
         print(f"⚠️ Не удалось удалить: {e}")
 
-    # 5. новое сообщение
-    new_markup = None
-    if chat_link:
-        new_markup = InlineKeyboardMarkup()
-        new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-
+    # 6. Отправляем новое
     try:
+        # Извлекаем номер матча из оригинального текста
+        original_text = message.text or message.caption or ""
+        match_num = ""
+        if "мэтч #" in original_text:
+            match_num = original_text.split("мэтч #")[1].split()[0]
+            new_text = f"🎮 У вас создан мэтч #{match_num}\n\n✅ Вы оценили тиммейта: {vote_type}"
+        else:
+            new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
+
         bot.send_message(
-            chat_id=user_id,
-            text=f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}",
+            chat_id=chat_id,  # ВАЖНО: используем chat_id, не user_id
+            text=new_text,
             reply_markup=new_markup
         )
+        print(f"✅ Новое сообщение отправлено")
     except Exception as e:
         print(f"❌ Ошибка отправки: {e}")
 
