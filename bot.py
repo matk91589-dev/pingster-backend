@@ -288,11 +288,9 @@ def handle_reputation_vote(call):
     
     vote_type = "👍" if ":up:" in callback_data else "👎"
     
-    print("=" * 50)
     print(f"🗳 Получен голос: {callback_data}")
-    print(f"👤 От пользователя: {user_id}")
-    print(f"📡 Отправляем запрос на: {API_URL}/reputation/vote")
     
+    # 🔥 СНАЧАЛА ОТПРАВЛЯЕМ В API
     try:
         response = requests.post(
             f'{API_URL}/reputation/vote',
@@ -300,74 +298,48 @@ def handle_reputation_vote(call):
             timeout=10
         )
         
-        print(f"📡 Статус ответа API: {response.status_code}")
-        print(f"📡 Тело ответа API: {response.text}")
-        
         if response.status_code == 200:
-            print(f"✅ API вернул 200, обрабатываем...")
+            print(f"✅ API ответил OK")
             
-            # 🔥 НАХОДИМ ССЫЛКУ НА ЧАТ
-            chat_link = None
-            if message.reply_markup and message.reply_markup.inline_keyboard:
-                print(f"🔍 Ищем кнопку чата в клавиатуре...")
-                for row in message.reply_markup.inline_keyboard:
-                    for btn in row:
-                        if btn.url:
-                            chat_link = btn.url
-                            print(f"✅ Найдена ссылка на чат: {chat_link}")
-                            break
-            
-            # 🔥 СОЗДАЁМ НОВУЮ КЛАВИАТУРУ ТОЛЬКО С КНОПКОЙ ЧАТА
-            new_markup = None
-            if chat_link:
-                new_markup = InlineKeyboardMarkup()
-                new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-                print(f"✅ Создана новая клавиатура с кнопкой чата")
-            else:
-                print(f"⚠️ Ссылка на чат не найдена, клавиатура будет пустой")
-            
-            # 🔥 МЕНЯЕМ ТЕКСТ
-            new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
-            print(f"📝 Новый текст: {new_text[:50]}...")
-            
+            # 🔥 ПРОБУЕМ ОТРЕДАКТИРОВАТЬ СООБЩЕНИЕ
             try:
+                # Меняем текст
+                new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
+                
+                # Убираем кнопки 👍/👎, оставляем только чат
+                chat_link = None
+                if message.reply_markup and message.reply_markup.inline_keyboard:
+                    for row in message.reply_markup.inline_keyboard:
+                        for btn in row:
+                            if btn.url:
+                                chat_link = btn.url
+                                break
+                
+                new_markup = None
+                if chat_link:
+                    new_markup = InlineKeyboardMarkup()
+                    new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+                
                 bot.edit_message_text(
                     chat_id=user_id,
                     message_id=message.message_id,
                     text=new_text,
                     reply_markup=new_markup
                 )
-                print(f"✅ Сообщение успешно отредактировано")
+                print(f"✅ Сообщение отредактировано")
+                
             except Exception as edit_error:
-                print(f"❌ Ошибка редактирования сообщения: {edit_error}")
-                # Пробуем без клавиатуры
-                try:
-                    bot.edit_message_text(
-                        chat_id=user_id,
-                        message_id=message.message_id,
-                        text=new_text
-                    )
-                    print(f"✅ Сообщение отредактировано (без клавиатуры)")
-                except Exception as e2:
-                    print(f"❌ Полная ошибка редактирования: {e2}")
+                print(f"⚠️ Не удалось отредактировать: {edit_error}")
+                # Если не получилось — просто отвечаем на callback
             
             bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-            print(f"✅ Голос обработан, кнопки 👍/👎 убраны")
+            
         else:
-            print(f"❌ API вернул ошибку {response.status_code}: {response.text}")
             bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
             
-    except requests.exceptions.Timeout:
-        print(f"❌ Таймаут запроса к API")
-        bot.answer_callback_query(call.id, "❌ Сервер не отвечает, попробуй позже")
-    except requests.exceptions.ConnectionError:
-        print(f"❌ Ошибка соединения с API: {API_URL}/reputation/vote")
-        bot.answer_callback_query(call.id, "❌ Ошибка соединения с сервером")
     except Exception as e:
-        print(f"❌ Неизвестная ошибка: {type(e).__name__} - {e}")
+        print(f"❌ Ошибка API: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка соединения")
-    
-    print("=" * 50)
 
 # ============================================
 # ЗАПУСК
