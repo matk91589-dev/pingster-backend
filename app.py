@@ -2127,8 +2127,8 @@ def create_game():
             )
             
             # 🔥 7. ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ
-            send_match_notification(telegram_id1, game_id, nick2, public_link)
-            send_match_notification(telegram_id2, game_id, nick1, public_link)
+            send_match_notification(telegram_id1, match_id, nick2, public_link)
+            send_match_notification(telegram_id2, match_id, nick1, public_link)
             
             # 🔥 8. ПРОВЕРЯЕМ ПЕРВЫЙ МЭТЧ
             for pid in [player1_id, player2_id]:
