@@ -1593,14 +1593,14 @@ def respond_match():
                 return jsonify({"status": "accepted", "both_accepted": True})
                 
             elif r1 == 'reject' or r2 == 'reject':
-                # Удаляем матч
-                cursor.execute("DELETE FROM matches WHERE id = %s", (data['match_id'],))
+                # 🔥 НЕ УДАЛЯЕМ, А СТАВИМ СТАТУС 'rejected' — ID НЕ ПРЫГАЮТ!
+                cursor.execute("UPDATE matches SET status = 'rejected' WHERE id = %s", (data['match_id'],))
                 
-                # 🔥 УДАЛЯЕМ ОБОИХ ИГРОКОВ ИЗ ОЧЕРЕДИ ПОИСКА
+                # Удаляем обоих из очереди поиска
                 cursor.execute("DELETE FROM search_queue WHERE player_id IN (%s, %s)", 
                                (match['player1_id'], match['player2_id']))
                 
-                logger.info(f"❌ Матч {data['match_id']} отклонён. Игроки {match['player1_id']} и {match['player2_id']} удалены из очереди.")
+                logger.info(f"❌ Матч {data['match_id']} отклонён. Статус: rejected")
                 
                 return jsonify({"status": "rejected", "both_accepted": False})
                 
