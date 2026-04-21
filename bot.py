@@ -304,31 +304,25 @@ def handle_reputation_vote(call):
     except Exception as e:
         print(f"⚠️ API не ответил: {e}")
     
-    # 🔥 3. МЕНЯЕМ ТЕКСТ И УБИРАЕМ КНОПКИ 👍/👎, НО ОСТАВЛЯЕМ ЧАТ
+    # 🔥 3. ИЩЕМ ССЫЛКУ НА ЧАТ
+    chat_link = None
+    if message.reply_markup and message.reply_markup.inline_keyboard:
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url:
+                    chat_link = btn.url
+                    break
+    
+    # 🔥 4. НОВЫЙ ТЕКСТ
+    new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
+    
+    # 🔥 5. ПРОБУЕМ ОТРЕДАКТИРОВАТЬ СООБЩЕНИЕ
     try:
-        # 🔥 ИЩЕМ ССЫЛКУ НА ЧАТ (кнопка с url)
-        chat_link = None
-        if message.reply_markup and message.reply_markup.inline_keyboard:
-            print(f"🔍 Клавиатура: {message.reply_markup.inline_keyboard}")
-            for row in message.reply_markup.inline_keyboard:
-                for btn in row:
-                    print(f"🔍 Кнопка: text='{btn.text}', url='{btn.url}', callback='{btn.callback_data}'")
-                    if btn.url:  # 🔥 Это кнопка с ссылкой!
-                        chat_link = btn.url
-                        print(f"✅ Найдена ссылка: {chat_link}")
-                        break
-        
-        # 🔥 СОЗДАЁМ НОВУЮ КЛАВИАТУРУ ТОЛЬКО С КНОПКОЙ ЧАТА
+        # Создаём клавиатуру ТОЛЬКО с кнопкой чата
         new_markup = None
         if chat_link:
             new_markup = InlineKeyboardMarkup()
             new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-            print(f"✅ Создана клавиатура с кнопкой чата")
-        else:
-            print(f"⚠️ Ссылка на чат не найдена!")
-        
-        # 🔥 НОВЫЙ ТЕКСТ
-        new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
         
         bot.edit_message_text(
             chat_id=user_id,
@@ -337,11 +331,49 @@ def handle_reputation_vote(call):
             reply_markup=new_markup,
             parse_mode='HTML'
         )
-        print(f"✅ Сообщение отредактировано с клавиатурой")
-        
+        print(f"✅ Сообщение отредактировано")
     except Exception as e:
-        print(f"❌ Ошибка редактирования: {e}")
-
+        print(f"⚠️ edit_message_text не сработал: {e}")
+        
+        # 🔥 ПЛАН Б: ТОЛЬКО УБИРАЕМ КЛАВИАТУРУ
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=user_id,
+                message_id=message.message_id,
+                reply_markup=None  # Полностью убираем ВСЕ кнопки
+            )
+            print(f"✅ Клавиатура убрана")
+            
+            # И отправляем новое сообщение с текстом
+            new_markup = None
+            if chat_link:
+                new_markup = InlineKeyboardMarkup()
+                new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+            
+            bot.send_message(
+                chat_id=user_id,
+                text=new_text,
+                reply_markup=new_markup,
+                parse_mode='HTML'
+            )
+            print(f"✅ Отправлено новое сообщение")
+            
+        except Exception as e2:
+            print(f"❌ План Б тоже не сработал: {e2}")
+            
+            # 🔥 ПЛАН В: Отправляем новое сообщение (старое останется с кнопками)
+            new_markup = None
+            if chat_link:
+                new_markup = InlineKeyboardMarkup()
+                new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+            
+            bot.send_message(
+                chat_id=user_id,
+                text=new_text,
+                reply_markup=new_markup,
+                parse_mode='HTML'
+            )
+            print(f"✅ Отправлено новое сообщение (старое осталось)")
 # ============================================
 # ЗАПУСК
 # ============================================
