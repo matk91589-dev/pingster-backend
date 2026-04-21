@@ -290,7 +290,7 @@ def handle_reputation_vote(call):
     
     print(f"🗳 Получен голос: {callback_data}")
     
-    # 🔥 СНАЧАЛА ОТПРАВЛЯЕМ В API
+    # 🔥 1. СНАЧАЛА ОТПРАВЛЯЕМ В API
     try:
         response = requests.post(
             f'{API_URL}/reputation/vote',
@@ -301,54 +301,45 @@ def handle_reputation_vote(call):
         if response.status_code == 200:
             print(f"✅ API ответил OK")
             
-            # 🔥 СОХРАНЯЕМ ТОЛЬКО КНОПКУ ЧАТА
-            chat_link = None
-            if message.reply_markup and message.reply_markup.inline_keyboard:
-                for row in message.reply_markup.inline_keyboard:
-                    for btn in row:
-                        if btn.url:
-                            chat_link = btn.url
-                            break
-            
-            # 🔥 СОЗДАЁМ НОВУЮ КЛАВИАТУРУ (ТОЛЬКО ЧАТ ИЛИ ПУСТО)
-            new_markup = None
-            if chat_link:
-                new_markup = InlineKeyboardMarkup()
-                new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-            
-            # 🔥 МЕНЯЕМ ТЕКСТ (добавляем пробел в конце чтобы точно изменился)
-            new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
-            if new_text == message.text:
-                new_text = message.text + " "  # Костыль чтобы текст точно изменился
-            
+            # 🔥 2. ПРОБУЕМ ОТРЕДАКТИРОВАТЬ СООБЩЕНИЕ (если не получится - похуй)
             try:
+                # Находим ссылку на чат
+                chat_link = None
+                if message.reply_markup and message.reply_markup.inline_keyboard:
+                    for row in message.reply_markup.inline_keyboard:
+                        for btn in row:
+                            if btn.url:
+                                chat_link = btn.url
+                                break
+                
+                # Создаём новую клавиатуру
+                new_markup = None
+                if chat_link:
+                    new_markup = InlineKeyboardMarkup()
+                    new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+                
+                # Меняем текст
+                new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
+                
                 bot.edit_message_text(
                     chat_id=user_id,
                     message_id=message.message_id,
                     text=new_text,
                     reply_markup=new_markup
                 )
-                print(f"✅ Сообщение отредактировано, кнопки убраны")
-            except Exception as e:
-                print(f"⚠️ Ошибка редактирования: {e}")
-                # Пробуем только убрать клавиатуру
-                try:
-                    bot.edit_message_reply_markup(
-                        chat_id=user_id,
-                        message_id=message.message_id,
-                        reply_markup=new_markup
-                    )
-                    print(f"✅ Клавиатура обновлена")
-                except:
-                    pass
+                print(f"✅ Сообщение отредактировано")
+            except:
+                # Не получилось отредактировать - ну и хуй с ним
+                print(f"⚠️ Не удалось отредактировать сообщение")
             
+            # 🔥 3. ОТВЕЧАЕМ НА CALLBACK (это точно сработает)
             bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
             
         else:
-            bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
+            bot.answer_callback_query(call.id, "❌ Ошибка сервера")
             
     except Exception as e:
-        print(f"❌ Ошибка API: {e}")
+        print(f"❌ Ошибка: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка соединения")
 
 # ============================================
