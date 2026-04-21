@@ -284,58 +284,56 @@ def check_forum_callback(call):
 def handle_reputation_vote(call):
     callback_data = call.data
     message = call.message
-    
+    user_id = call.from_user.id
+
     vote_type = "👍" if ":up:" in callback_data else "👎"
-    
+
     print(f"🗳 Получен голос: {callback_data}")
-    print(f"📌 CHAT ID: {message.chat.id}")
-    print(f"📌 MESSAGE THREAD ID: {message.message_thread_id}")
-    
-    # 🔥 1. СРАЗУ ОТВЕЧАЕМ НА CALLBACK
+
+    # 1. Ответ
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-    
-    # 🔥 2. ОТПРАВЛЯЕМ В API (в фоне)
+
+    # 2. API
     try:
         requests.post(
             f'{API_URL}/reputation/vote',
             json={'callback_data': callback_data},
             timeout=5
         )
-        print(f"✅ Голос отправлен в API")
     except Exception as e:
-        print(f"⚠️ API не ответил: {e}")
-    
-    # 🔥 3. ИЩЕМ ССЫЛКУ НА ЧАТ
+        print(f"❌ Ошибка API: {e}")
+
+    # 3. чат ссылка
     chat_link = None
-    if message.reply_markup and message.reply_markup.inline_keyboard:
+    if message.reply_markup:
         for row in message.reply_markup.inline_keyboard:
             for btn in row:
                 if btn.url:
                     chat_link = btn.url
-                    break
-    
-    # 🔥 4. НОВЫЙ ТЕКСТ (с пробелом в конце для гарантии)
-    new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type} "
-    
-    # 🔥 5. РЕДАКТИРУЕМ СООБЩЕНИЕ (С ПРАВИЛЬНЫМ chat_id!)
+
+    # 4. удаление
     try:
-        new_markup = None
-        if chat_link:
-            new_markup = InlineKeyboardMarkup()
-            new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-        
-        bot.edit_message_text(
-            chat_id=message.chat.id,  # 🔥 ВОТ ОНО! РАНЬШЕ БЫЛО user_id!
-            message_id=message.message_id,
-            message_thread_id=message.message_thread_id,  # 🔥 ДЛЯ ФОРУМА!
-            text=new_text,
-            reply_markup=new_markup,
-            parse_mode='HTML'
+        bot.delete_message(
+            chat_id=message.chat.id,
+            message_id=message.message_id
         )
-        print(f"✅ Сообщение отредактировано!")
-        
     except Exception as e:
-        print(f"❌ Ошибка редактирования: {e}")
+        print(f"⚠️ Не удалось удалить: {e}")
+
+    # 5. новое сообщение
+    new_markup = None
+    if chat_link:
+        new_markup = InlineKeyboardMarkup()
+        new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+
+    try:
+        bot.send_message(
+            chat_id=user_id,
+            text=f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}",
+            reply_markup=new_markup
+        )
+    except Exception as e:
+        print(f"❌ Ошибка отправки: {e}")
 
 # ============================================
 # ЗАПУСК
