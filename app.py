@@ -575,20 +575,21 @@ def check_user_in_forum(user_id: str) -> bool:
 # ============================================
 # РЕПУТАЦИЯ - ОТПРАВКА УВЕДОМЛЕНИЙ
 # ============================================
-def send_match_notification(telegram_id, match_id, teammate_nick, chat_link):
+def send_match_notification(telegram_id, display_id, actual_match_id, teammate_nick, chat_link):
     """Отправляет личное сообщение игроку с кнопками оценки"""
     try:
         keyboard = {
             "inline_keyboard": [
                 [{"text": "👉 Перейти в чат", "url": chat_link}],
                 [
-                    {"text": "👍", "callback_data": f"vote:up:{telegram_id}:{match_id}"},
-                    {"text": "👎", "callback_data": f"vote:down:{telegram_id}:{match_id}"}
+                    {"text": "👍", "callback_data": f"vote:up:{telegram_id}:{actual_match_id}"},
+                    {"text": "👎", "callback_data": f"vote:down:{telegram_id}:{actual_match_id}"}
                 ]
             ]
         }
         
-        message = f"🎮 У вас создан мэтч #{match_id} с игроком {teammate_nick}\n\nОцените тиммейта:"
+        # 🔥 В тексте показываем display_id (красивый ID), а в callback передаём actual_match_id!
+        message = f"🎮 У вас создан мэтч #{display_id} с игроком {teammate_nick}\n\nОцените тиммейта:"
         
         response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -2127,8 +2128,9 @@ def create_game():
             )
             
             # 🔥 7. ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ
-            send_match_notification(telegram_id1, match_id, nick2, public_link)
-            send_match_notification(telegram_id2, match_id, nick1, public_link)
+            # 🔥 display_id = game_id (показываем юзеру), actual_match_id = match_id (для поиска в БД)
+            send_match_notification(telegram_id1, game_id, match_id, nick2, public_link)
+            send_match_notification(telegram_id2, game_id, match_id, nick1, public_link)
             
             # 🔥 8. ПРОВЕРЯЕМ ПЕРВЫЙ МЭТЧ
             for pid in [player1_id, player2_id]:
