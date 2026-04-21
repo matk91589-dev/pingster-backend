@@ -582,8 +582,8 @@ def send_match_notification(telegram_id, match_id, teammate_nick, chat_link):
             "inline_keyboard": [
                 [{"text": "👉 Перейти в чат", "url": chat_link}],
                 [
-                    {"text": "👍", "callback_data": f"vote_up_{telegram_id}_{match_id}"},
-                    {"text": "👎", "callback_data": f"vote_down_{telegram_id}_{match_id}"}
+                    {"text": "👍", "callback_data": f"vote:up:{telegram_id}:{match_id}"},
+                    {"text": "👎", "callback_data": f"vote:down:{telegram_id}:{match_id}"}
                 ]
             ]
         }
