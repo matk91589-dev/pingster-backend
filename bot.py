@@ -304,15 +304,18 @@ def handle_reputation_vote(call):
     except Exception as e:
         print(f"⚠️ API не ответил: {e}")
     
-    # 🔥 3. МЕНЯЕМ ТЕКСТ И УБИРАЕМ КНОПКИ 👍/👎
+    # 🔥 3. МЕНЯЕМ ТЕКСТ И УБИРАЕМ КНОПКИ 👍/👎, НО ОСТАВЛЯЕМ ЧАТ
     try:
-        # Находим ссылку на чат
+        # 🔥 ИЩЕМ ССЫЛКУ НА ЧАТ (кнопка с url)
         chat_link = None
         if message.reply_markup and message.reply_markup.inline_keyboard:
+            print(f"🔍 Клавиатура: {message.reply_markup.inline_keyboard}")
             for row in message.reply_markup.inline_keyboard:
                 for btn in row:
-                    if btn.url:
+                    print(f"🔍 Кнопка: text='{btn.text}', url='{btn.url}', callback='{btn.callback_data}'")
+                    if btn.url:  # 🔥 Это кнопка с ссылкой!
                         chat_link = btn.url
+                        print(f"✅ Найдена ссылка: {chat_link}")
                         break
         
         # 🔥 СОЗДАЁМ НОВУЮ КЛАВИАТУРУ ТОЛЬКО С КНОПКОЙ ЧАТА
@@ -320,8 +323,11 @@ def handle_reputation_vote(call):
         if chat_link:
             new_markup = InlineKeyboardMarkup()
             new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+            print(f"✅ Создана клавиатура с кнопкой чата")
+        else:
+            print(f"⚠️ Ссылка на чат не найдена!")
         
-        # 🔥 НОВЫЙ ТЕКСТ (полностью пересобираем, а не replace)
+        # 🔥 НОВЫЙ ТЕКСТ
         new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
         
         bot.edit_message_text(
@@ -329,34 +335,12 @@ def handle_reputation_vote(call):
             message_id=message.message_id,
             text=new_text,
             reply_markup=new_markup,
-            parse_mode='HTML'  # 🔥 Используем HTML вместо Markdown
+            parse_mode='HTML'
         )
-        print(f"✅ Сообщение отредактировано: '{new_text}'")
+        print(f"✅ Сообщение отредактировано с клавиатурой")
         
     except Exception as e:
         print(f"❌ Ошибка редактирования: {e}")
-        # Пробуем без клавиатуры
-        try:
-            new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message.message_id,
-                text=new_text,
-                parse_mode='HTML'
-            )
-            print(f"✅ Текст изменён (без клавиатуры)")
-        except Exception as e2:
-            print(f"❌ Полная ошибка: {e2}")
-            # Отправляем новое сообщение
-            try:
-                bot.send_message(
-                    chat_id=user_id,
-                    text=f"✅ Вы оценили тиммейта: {vote_type}",
-                    reply_markup=new_markup
-                )
-                print(f"✅ Отправлено новое сообщение")
-            except:
-                pass
 
 # ============================================
 # ЗАПУСК
