@@ -282,8 +282,13 @@ def check_forum_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
 def handle_reputation_vote(call):
-    """Обрабатывает голоса за репутацию"""
     callback_data = call.data
+    user_id = call.from_user.id
+    message = call.message
+    
+    # 🔥 Определяем тип оценки для текста
+    vote_type = "👍" if ":up:" in callback_data else "👎"
+    
     print(f"🗳 Получен голос: {callback_data}")
     
     try:
@@ -294,14 +299,22 @@ def handle_reputation_vote(call):
         )
         
         if response.status_code == 200:
+            # 🔥 МЕНЯЕМ ТЕКСТ СООБЩЕНИЯ И УБИРАЕМ КНОПКИ!
+            new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
+            
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message.message_id,
+                text=new_text,
+                reply_markup=None  # Убираем клавиатуру
+            )
             bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-            print(f"✅ Голос обработан: {callback_data}")
+            print(f"✅ Голос обработан, кнопки убраны, текст обновлён")
         else:
             bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
-            print(f"❌ Ошибка API: {response.status_code}")
     except Exception as e:
         bot.answer_callback_query(call.id, "❌ Ошибка соединения")
-        print(f"❌ Ошибка отправки голоса: {e}")
+        print(f"❌ Ошибка: {e}")
 
 # ============================================
 # ЗАПУСК
