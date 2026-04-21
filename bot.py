@@ -209,24 +209,7 @@ def support_command(message):
     threading.Thread(target=delete_message_later, args=(telegram_id, bot_msg.message_id, 30), daemon=True).start()
 
 # ============================================
-# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
-# ============================================
-
-@bot.message_handler(func=lambda message: True)
-def delete_unknown_messages(message):
-    telegram_id = message.from_user.id
-    
-    if message.text and message.text.startswith('/'):
-        return
-    
-    try:
-        bot.delete_message(telegram_id, message.message_id)
-        print(f"🗑 Удалено сообщение от {telegram_id}")
-    except:
-        pass
-
-# ============================================
-# ОБРАБОТЧИК КНОПОК
+# ВАЖНО: Переместил хендлер удаления В КОНЕЦ и добавил исключения!
 # ============================================
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_forum")
@@ -290,18 +273,19 @@ def handle_reputation_vote(call):
 
     vote_type = "👍" if ":up:" in callback_data else "👎"
 
-    print(f"🗳 Получен голос: {callback_data}")
+    print(f"🗳 Получен голос: {callback_data} от пользователя {user_id} в чате {chat_id}")
 
     # 1. Сразу отвечаем на callback
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
 
-    # 2. API запрос в фоне (не блокируем)
+    # 2. API запрос
     try:
-        requests.post(
+        response = requests.post(
             f'{API_URL}/reputation/vote',
             json={'callback_data': callback_data},
             timeout=5
         )
+        print(f"📡 API ответ: {response.status_code}")
     except Exception as e:
         print(f"❌ Ошибка API: {e}")
 
@@ -316,19 +300,14 @@ def handle_reputation_vote(call):
             if chat_link:
                 break
 
+    print(f"🔗 Ссылка на чат: {chat_link}")
+
     # 4. Создаём новую клавиатуру
     new_markup = InlineKeyboardMarkup()
     if chat_link:
         new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
 
-    # 5. Удаляем старое сообщение
-    try:
-        bot.delete_message(chat_id, message_id)
-        print(f"🗑 Старое сообщение удалено")
-    except Exception as e:
-        print(f"⚠️ Не удалось удалить: {e}")
-
-    # 6. Отправляем новое
+    # 5. Редактируем сообщение вместо удаления
     try:
         # Извлекаем номер матча из оригинального текста
         original_text = message.text or message.caption or ""
@@ -339,14 +318,52 @@ def handle_reputation_vote(call):
         else:
             new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы оценили тиммейта: {vote_type}"
 
-        bot.send_message(
-            chat_id=chat_id,  # ВАЖНО: используем chat_id, не user_id
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
             text=new_text,
             reply_markup=new_markup
         )
-        print(f"✅ Новое сообщение отправлено")
+        print(f"✅ Сообщение отредактировано")
     except Exception as e:
-        print(f"❌ Ошибка отправки: {e}")
+        print(f"❌ Ошибка редактирования: {e}")
+        # Fallback: удаляем и создаём новое
+        try:
+            bot.delete_message(chat_id, message_id)
+            bot.send_message(
+                chat_id=chat_id,
+                text=new_text,
+                reply_markup=new_markup
+            )
+            print(f"✅ Отправлено новое сообщение (fallback)")
+        except Exception as fallback_e:
+            print(f"❌ Даже fallback не сработал: {fallback_e}")
+
+# ============================================
+# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ - ИСПРАВЛЕННАЯ ВЕРСИЯ
+# ДОЛЖЕН БЫТЬ САМЫМ ПОСЛЕДНИМ ХЕНДЛЕРОМ!
+# ============================================
+
+@bot.message_handler(func=lambda message: True)
+def delete_unknown_messages(message):
+    """Удаляет только текстовые сообщения от пользователей, но не системные"""
+    telegram_id = message.from_user.id
+    
+    # Пропускаем команды
+    if message.text and message.text.startswith('/'):
+        return
+    
+    # Пропускаем сообщения от ботов (на всякий случай)
+    if message.from_user.is_bot:
+        return
+    
+    # Удаляем только в ЛИЧНЫХ чатах, не в группах
+    if message.chat.type == 'private':
+        try:
+            bot.delete_message(telegram_id, message.message_id)
+            print(f"🗑 Удалено лишнее сообщение от {telegram_id}")
+        except Exception as e:
+            print(f"⚠️ Не удалось удалить сообщение: {e}")
 
 # ============================================
 # ЗАПУСК
@@ -357,7 +374,7 @@ if __name__ == '__main__':
     print(f"🌐 FRONTEND: {FRONTEND_URL}")
     print(f"📞 Поддержка: @{SUPPORT_USERNAME}")
     print("⏳ Проверка сервера при /start")
-    print("👍 Репутация: упрощённая отправка")
+    print("👍 Репутация: редактирование сообщений")
     
     bot.remove_webhook()
     
