@@ -290,57 +290,68 @@ def handle_reputation_vote(call):
     
     print(f"🗳 Получен голос: {callback_data}")
     
-    # 🔥 1. СНАЧАЛА ОТПРАВЛЯЕМ В API
+    # 🔥 1. СНАЧАЛА ОТВЕЧАЕМ НА CALLBACK (чтобы убрать "часики" на кнопке)
+    bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
+    
+    # 🔥 2. ОТПРАВЛЯЕМ В API (в фоне, результат не важен для UX)
     try:
-        response = requests.post(
+        requests.post(
             f'{API_URL}/reputation/vote',
             json={'callback_data': callback_data},
-            timeout=10
+            timeout=5
         )
+        print(f"✅ Голос отправлен в API")
+    except:
+        print(f"⚠️ API не ответил, но репутация может обновиться позже")
+    
+    # 🔥 3. ГАРАНТИРОВАННО УБИРАЕМ КНОПКИ (меняем текст и клавиатуру)
+    try:
+        # Новый текст
+        new_text = f"🎮 У вас создан мэтч!\n\n✅ Вы уже оценили игрока: {vote_type}"
         
-        if response.status_code == 200:
-            print(f"✅ API ответил OK")
-            
-            # 🔥 2. ПРОБУЕМ ОТРЕДАКТИРОВАТЬ СООБЩЕНИЕ (если не получится - похуй)
-            try:
-                # Находим ссылку на чат
-                chat_link = None
-                if message.reply_markup and message.reply_markup.inline_keyboard:
-                    for row in message.reply_markup.inline_keyboard:
-                        for btn in row:
-                            if btn.url:
-                                chat_link = btn.url
-                                break
-                
-                # Создаём новую клавиатуру
-                new_markup = None
-                if chat_link:
-                    new_markup = InlineKeyboardMarkup()
-                    new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-                
-                # Меняем текст
-                new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
-                
-                bot.edit_message_text(
-                    chat_id=user_id,
-                    message_id=message.message_id,
-                    text=new_text,
-                    reply_markup=new_markup
-                )
-                print(f"✅ Сообщение отредактировано")
-            except:
-                # Не получилось отредактировать - ну и хуй с ним
-                print(f"⚠️ Не удалось отредактировать сообщение")
-            
-            # 🔥 3. ОТВЕЧАЕМ НА CALLBACK (это точно сработает)
-            bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-            
-        else:
-            bot.answer_callback_query(call.id, "❌ Ошибка сервера")
-            
+        # Оставляем только кнопку чата
+        chat_link = None
+        if message.reply_markup and message.reply_markup.inline_keyboard:
+            for row in message.reply_markup.inline_keyboard:
+                for btn in row:
+                    if btn.url:
+                        chat_link = btn.url
+                        break
+        
+        new_markup = None
+        if chat_link:
+            new_markup = InlineKeyboardMarkup()
+            new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+        
+        # Редактируем сообщение
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message.message_id,
+            text=new_text,
+            reply_markup=new_markup
+        )
+        print(f"✅ Кнопки убраны, текст изменён")
+        
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка соединения")
+        print(f"⚠️ Не удалось отредактировать: {e}")
+        # ПРОБУЕМ ТОЛЬКО УБРАТЬ КЛАВИАТУРУ
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=user_id,
+                message_id=message.message_id,
+                reply_markup=None  # Полностью убираем все кнопки
+            )
+            print(f"✅ Клавиатура убрана")
+        except:
+            # Если совсем никак - отправляем новое сообщение
+            try:
+                bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ Вы уже оценили игрока: {vote_type}"
+                )
+                print(f"✅ Отправлено новое сообщение")
+            except:
+                pass
 
 # ============================================
 # ЗАПУСК
