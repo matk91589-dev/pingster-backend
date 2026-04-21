@@ -309,24 +309,40 @@ def handle_reputation_vote(call):
             
             new_markup = None
             if chat_link:
-                from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
                 new_markup = InlineKeyboardMarkup()
                 new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
             
+            # 🔥 МЕНЯЕМ ТЕКСТ
             new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
             
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message.message_id,
-                text=new_text,
-                reply_markup=new_markup
-            )
+            try:
+                bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=message.message_id,
+                    text=new_text,
+                    reply_markup=new_markup
+                )
+                print(f"✅ Сообщение обновлено, кнопки 👍/👎 убраны")
+            except Exception as e:
+                print(f"❌ Ошибка обновления сообщения: {e}")
+                # Пробуем только текст обновить
+                try:
+                    bot.edit_message_text(
+                        chat_id=user_id,
+                        message_id=message.message_id,
+                        text=new_text
+                    )
+                except:
+                    pass
+            
             bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
+            print(f"✅ Голос обработан: {vote_type}")
         else:
             bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
+            print(f"❌ Ошибка API: {response.status_code}")
     except Exception as e:
         bot.answer_callback_query(call.id, "❌ Ошибка соединения")
-
+        print(f"❌ Ошибка отправки голоса: {e}")
 # ============================================
 # ЗАПУСК
 # ============================================
