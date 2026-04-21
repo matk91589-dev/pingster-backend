@@ -157,7 +157,7 @@ def start(message):
         wake_up_server()
         bot_msg = bot.send_message(
             telegram_id,
-            " **загрузка сервера**\n\n"
+            " ♻️ **загрузка сервера**\n\n"
             "Пожалуйста, подождите 5 секунд и нажмите /start снова.",
             parse_mode='Markdown'
         )
@@ -286,7 +286,6 @@ def handle_reputation_vote(call):
     user_id = call.from_user.id
     message = call.message
     
-    # 🔥 Определяем тип оценки для текста
     vote_type = "👍" if ":up:" in callback_data else "👎"
     
     print(f"🗳 Получен голос: {callback_data}")
@@ -299,22 +298,34 @@ def handle_reputation_vote(call):
         )
         
         if response.status_code == 200:
-            # 🔥 МЕНЯЕМ ТЕКСТ СООБЩЕНИЯ И УБИРАЕМ КНОПКИ!
+            # 🔥 СОХРАНЯЕМ КНОПКУ «ПЕРЕЙТИ В ЧАТ»
+            chat_link = None
+            if message.reply_markup and message.reply_markup.inline_keyboard:
+                for row in message.reply_markup.inline_keyboard:
+                    for btn in row:
+                        if btn.url:
+                            chat_link = btn.url
+                            break
+            
+            new_markup = None
+            if chat_link:
+                from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+                new_markup = InlineKeyboardMarkup()
+                new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+            
             new_text = message.text.replace('Оцените тиммейта:', f'✅ Вы поставили оценку: {vote_type}')
             
             bot.edit_message_text(
                 chat_id=user_id,
                 message_id=message.message_id,
                 text=new_text,
-                reply_markup=None  # Убираем клавиатуру
+                reply_markup=new_markup
             )
             bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-            print(f"✅ Голос обработан, кнопки убраны, текст обновлён")
         else:
             bot.answer_callback_query(call.id, "❌ Ошибка, попробуй позже")
     except Exception as e:
         bot.answer_callback_query(call.id, "❌ Ошибка соединения")
-        print(f"❌ Ошибка: {e}")
 
 # ============================================
 # ЗАПУСК
