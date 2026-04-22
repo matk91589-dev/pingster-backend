@@ -268,9 +268,6 @@ def check_forum_callback(call):
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
 def handle_reputation_vote(call):
-    from datetime import datetime
-    import threading
-    
     message = call.message
     chat_id = message.chat.id
     message_id = message.message_id
@@ -278,67 +275,62 @@ def handle_reputation_vote(call):
 
     vote_type = "👍" if ":up:" in callback_data else "👎"
 
-    with open('/app/bot_debug.log', 'a') as f:
-        f.write(f"\n{'='*50}\n")
-        f.write(f"🔄 ГОЛОСОВАНИЕ: {vote_type}\n")
-        
-        # 1. API в фоне
-        def send_api():
-            try:
-                requests.post(f"{API_URL}/reputation/vote", json={"callback_data": callback_data}, timeout=3)
-                f.write(f"✅ API OK\n")
-            except Exception as e:
-                f.write(f"❌ API error: {e}\n")
-        threading.Thread(target=send_api, daemon=True).start()
-        
-        # 2. Ответ на callback
-        bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-        
-        # 3. Парсим номер матча
-        original_text = message.text or ""
-        match_num = ""
-        if "мэтч #" in original_text:
-            try:
-                match_num = original_text.split("мэтч #")[1].split()[0]
-            except:
-                pass
-        
-        # 4. Новый текст
-        if match_num:
+    # API в фоне
+    import threading
+    def send_api():
+        try:
+            requests.post(f"{API_URL}/reputation/vote", json={"callback_data": callback_data}, timeout=3)
+        except:
+            pass
+    threading.Thread(target=send_api, daemon=True).start()
+
+    # Ответ
+    bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
+
+    # Достаём ссылку на чат
+    chat_link = None
+    if message.reply_markup:
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                if btn.url:
+                    chat_link = btn.url
+                    break
+            if chat_link:
+                break
+
+    # Парсим номер матча
+    original_text = message.text or ""
+    match_num = ""
+    if "мэтч #" in original_text:
+        try:
+            match_num = original_text.split("мэтч #")[1].split()[0]
+        except:
+            pass
+
+    # Новый текст со ссылкой
+    if match_num:
+        if chat_link:
+            new_text = f"🎮 У вас создан мэтч #{match_num} с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}\n\n[👉 Перейти в чат]({chat_link})"
+        else:
             new_text = f"🎮 У вас создан мэтч #{match_num} с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
+    else:
+        if chat_link:
+            new_text = f"🎮 У вас создан мэтч с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}\n\n[👉 Перейти в чат]({chat_link})"
         else:
             new_text = f"🎮 У вас создан мэтч с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
-        
-        # 5. Достаём ссылку на чат
-        chat_link = None
-        if message.reply_markup:
-            for row in message.reply_markup.inline_keyboard:
-                for btn in row:
-                    if btn.url:
-                        chat_link = btn.url
-                        break
-                if chat_link:
-                    break
-        
-        # 6. Новая клавиатура (только чат)
-        new_markup = None
-        if chat_link:
-            new_markup = InlineKeyboardMarkup()
-            new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-        
-        # 7. Редактируем
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=new_text,
-                reply_markup=new_markup
-            )
-            f.write(f"✅✅✅ СООБЩЕНИЕ ОБНОВЛЕНО! Кнопки убраны\n")
-        except Exception as e:
-            f.write(f"❌ Ошибка: {e}\n")
-        
-        f.write(f"{'='*50}\n")
+
+    # Редактируем сообщение, УБИРАЕМ ВСЕ КНОПКИ
+    try:
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=new_text,
+            reply_markup=None,  # 🔥 УБИРАЕМ ВСЕ КНОПКИ НАХУЙ
+            parse_mode="Markdown"  # 🔥 ЧТОБЫ ССЫЛКА РАБОТАЛА
+        )
+        print("✅ Сообщение обновлено, кнопки удалены")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
 
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
