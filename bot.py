@@ -310,36 +310,26 @@ def handle_reputation_vote(call):
         except:
             pass
 
-    # 🔥 НОВЫЙ ТЕКСТ БЕЗ КНОПОК, С ССЫЛКОЙ В ТЕКСТЕ
+    # 🔥 НОВЫЙ ТЕКСТ
     if chat_link:
-        new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n[👉 Перейти в чат]({chat_link})\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
+        new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n👉 Перейти в чат: {chat_link}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
     else:
         new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
 
-    # 🔥 РЕДАКТИРУЕМ, УБИРАЕМ ВСЕ КНОПКИ
+    # 🔥 УДАЛЯЕМ СТАРОЕ СООБЩЕНИЕ
     try:
-        bot.edit_message_text(
+        bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
+    # 🔥 ОТПРАВЛЯЕМ НОВОЕ (БЕЗ КНОПОК)
+    try:
+        bot.send_message(
             chat_id=chat_id,
-            message_id=message_id,
-            text=new_text,
-            reply_markup=None,  # Убираем все кнопки
-            parse_mode="Markdown"
+            text=new_text
         )
     except Exception as e:
-        # Если Markdown не сработал - без ссылки
-        if chat_link:
-            new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n👉 Перейти в чат: {chat_link}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
-        else:
-            new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=new_text,
-                reply_markup=None
-            )
-        except:
-            pass
+        print(f"Ошибка отправки: {e}")
 
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
