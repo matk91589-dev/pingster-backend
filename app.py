@@ -578,9 +578,9 @@ def check_user_in_forum(user_id: str) -> bool:
 def send_match_notification(telegram_id, display_id, actual_match_id, teammate_nick, chat_link):
     """Отправляет личное сообщение игроку с кнопками оценки"""
     try:
+        # 🔥 Клавиатура ТОЛЬКО с кнопками голосования
         keyboard = {
             "inline_keyboard": [
-                [{"text": "👉 Перейти в чат", "url": chat_link}],
                 [
                     {"text": "👍", "callback_data": f"vote:up:{telegram_id}:{actual_match_id}"},
                     {"text": "👎", "callback_data": f"vote:down:{telegram_id}:{actual_match_id}"}
@@ -588,15 +588,21 @@ def send_match_notification(telegram_id, display_id, actual_match_id, teammate_n
             ]
         }
         
-        # 🔥 В тексте показываем display_id (красивый ID), а в callback передаём actual_match_id!
-        message = f"🎮 У вас создан мэтч #{display_id} с игроком {teammate_nick}\n\nОцените тиммейта:"
+        # 🔥 Текст со скрытой ссылкой в Markdown
+        message = (
+            f"🎮 У вас создан мэтч #{display_id} с игроком {teammate_nick}\n\n"
+            f"[👉 Перейти в чат]({chat_link})\n\n"
+            f"Оцените тиммейта:"
+        )
         
         response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": telegram_id,
                 "text": message,
-                "reply_markup": keyboard
+                "reply_markup": keyboard,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True  # 🔥 Чтобы не было превью ссылки
             },
             timeout=5
         )
