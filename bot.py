@@ -275,61 +275,61 @@ def handle_reputation_vote(call):
 
     vote_type = "👍" if ":up:" in callback_data else "👎"
 
-    # API в фоне
-    import threading
+    print(f"🗳 Голос: {callback_data}")
+
+    # 1. API запрос в фоне
     def send_api():
         try:
-            requests.post(f"{API_URL}/reputation/vote", json={"callback_data": callback_data}, timeout=3)
-        except:
-            pass
+            requests.post(
+                f"{API_URL}/reputation/vote",
+                json={"callback_data": callback_data},
+                timeout=3
+            )
+        except Exception as e:
+            print(f"API error: {e}")
+    
     threading.Thread(target=send_api, daemon=True).start()
 
-    # Ответ на callback
+    # 2. Ответ на callback
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
 
-    # Достаём ссылку на чат
+    # 3. Получаем ссылку на чат (ПРАВИЛЬНЫЙ СПОСОБ!)
     chat_link = None
-    if message.reply_markup:
-        for row in message.reply_markup.inline_keyboard:
+    if message.reply_markup and hasattr(message.reply_markup, 'keyboard'):
+        for row in message.reply_markup.keyboard:
             for btn in row:
-                if btn.url:
+                if hasattr(btn, 'url') and btn.url:
                     chat_link = btn.url
                     break
             if chat_link:
                 break
 
-    # Парсим номер матча и имя
+    # 4. Парсим номер матча
     original_text = message.text or ""
     match_num = ""
-    player_name = "pidrilla"
     if "мэтч #" in original_text:
         try:
-            parts = original_text.split("мэтч #")[1].split(" с игроком ")
-            match_num = parts[0]
-            player_name = parts[1].split("\n")[0] if len(parts) > 1 else "pidrilla"
+            match_num = original_text.split("мэтч #")[1].split()[0]
         except:
             pass
 
-    # 🔥 НОВЫЙ ТЕКСТ
-    if chat_link:
-        new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n👉 Перейти в чат: {chat_link}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
+    # 5. Новый текст
+    if match_num:
+        new_text = f"🎮 Мэтч #{match_num}\n\n✅ Вы оценили тиммейта: {vote_type}"
     else:
-        new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
+        new_text = f"🎮 Мэтч\n\n✅ Вы оценили тиммейта: {vote_type}"
 
-    # 🔥 УДАЛЯЕМ СТАРОЕ СООБЩЕНИЕ
+    # 6. Редактируем сообщение (УБИРАЕМ ВСЕ КНОПКИ)
     try:
-        bot.delete_message(chat_id, message_id)
-    except:
-        pass
-
-    # 🔥 ОТПРАВЛЯЕМ НОВОЕ (БЕЗ КНОПОК)
-    try:
-        bot.send_message(
+        bot.edit_message_text(
             chat_id=chat_id,
-            text=new_text
+            message_id=message_id,
+            text=new_text,
+            reply_markup=None  # Убираем все кнопки
         )
+        print(f"✅ Сообщение отредактировано")
     except Exception as e:
-        print(f"Ошибка отправки: {e}")
+        print(f"❌ Ошибка редактирования: {e}")
 
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
