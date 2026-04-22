@@ -2425,6 +2425,7 @@ def get_stats():
         return jsonify({"error": str(e)}), 500
 
 # ---------- РЕПУТАЦИЯ (CALLBACK ОТ БОТА) ----------
+# ---------- РЕПУТАЦИЯ (CALLBACK ОТ БОТА) ----------
 @app.route('/api/reputation/vote', methods=['POST'])
 def reputation_vote():
     try:
@@ -2450,7 +2451,7 @@ def reputation_vote():
         logger.info(f"🗳 Голос: {vote_type} от {voter_telegram_id} за мэтч {match_id}")
         
         with get_db_cursor() as cursor:
-            # 🔥 ЗАЩИТА ОТ НАКРУТКИ - проверяем, не голосовал ли уже
+            # 🔥 ЗАЩИТА ОТ НАКРУТКИ
             cursor.execute("""
                 SELECT id FROM match_votes 
                 WHERE match_id = %s AND voter_telegram_id = %s
@@ -2486,27 +2487,35 @@ def reputation_vote():
             teammate_telegram_id = player_ids[0] if player_ids[1] == voter_telegram_id else player_ids[1]
             logger.info(f"🎯 Тиммейт: {teammate_telegram_id}")
             
-            # 🔥 ОБНОВЛЯЕМ РЕПУТАЦИЮ
+            # 🔥 ОБНОВЛЯЕМ РЕЙТИНГ (используем rating, а не reputation)
             delta = 1 if vote_type == 'up' else -1
+            coins_delta = 75 if delta > 0 else -50  # Бонус/штраф в leadercoins
             
             cursor.execute("""
                 UPDATE users 
-                SET reputation = COALESCE(reputation, 0) + %s 
+                SET rating = COALESCE(rating, 0) + %s,
+                    leadercoins = COALESCE(leadercoins, 0) + %s
                 WHERE telegram_id = %s
-                RETURNING reputation
-            """, (delta, teammate_telegram_id))
+                RETURNING rating, leadercoins
+            """, (delta, coins_delta, teammate_telegram_id))
             
-            new_reputation = cursor.fetchone()['reputation']
+            result = cursor.fetchone()
+            new_rating = result['rating']
+            new_coins = result['leadercoins']
             
-            # 🔥 СОХРАНЯЕМ ГОЛОС (защита от накрутки)
+            # 🔥 СОХРАНЯЕМ ГОЛОС
             cursor.execute("""
                 INSERT INTO match_votes (match_id, voter_telegram_id, vote_type, created_at)
                 VALUES (%s, %s, %s, NOW())
             """, (match_id, voter_telegram_id, vote_type))
             
-            logger.info(f"✅ Репутация обновлена: target={teammate_telegram_id}, delta={delta}, new={new_reputation}")
+            logger.info(f"✅ Репутация обновлена: target={teammate_telegram_id}, delta={delta}, rating={new_rating}, coins={new_coins}")
         
-        return jsonify({"status": "ok", "reputation": new_reputation})
+        return jsonify({
+            "status": "ok", 
+            "rating": new_rating,
+            "leadercoins": new_coins
+        })
         
     except Exception as e:
         logger.error(f"❌ Ошибка reputation_vote: {e}")
