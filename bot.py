@@ -277,7 +277,7 @@ def handle_reputation_vote(call):
 
     print(f"🗳 Голос: {callback_data}")
 
-    # 1. API запрос в фоне
+    # API запрос
     def send_api():
         try:
             requests.post(
@@ -290,13 +290,21 @@ def handle_reputation_vote(call):
     
     threading.Thread(target=send_api, daemon=True).start()
 
-    # 2. Ответ на callback
+    # Ответ на callback
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
 
-    # 3. Получаем ссылку на чат (ПРАВИЛЬНЫЙ СПОСОБ!)
+    # Получаем ссылку на чат из ОРИГИНАЛЬНОГО ТЕКСТА (через entities)
     chat_link = None
-    if message.reply_markup and hasattr(message.reply_markup, 'keyboard'):
-        for row in message.reply_markup.keyboard:
+    if message.entities:
+        for entity in message.entities:
+            if entity.type == "text_link":
+                chat_link = entity.url
+                break
+
+    # Если не нашли в entities - ищем в reply_markup
+    if not chat_link and message.reply_markup:
+        keyboard = message.reply_markup.keyboard
+        for row in keyboard:
             for btn in row:
                 if hasattr(btn, 'url') and btn.url:
                     chat_link = btn.url
@@ -304,32 +312,72 @@ def handle_reputation_vote(call):
             if chat_link:
                 break
 
-    # 4. Парсим номер матча
-    original_text = message.text or ""
-    match_num = ""
-    if "мэтч #" in original_text:
-        try:
-            match_num = original_text.split("мэтч #")[1].split()[0]
-        except:
-            pass
-
-    # 5. Новый текст
-    if match_num:
-        new_text = f"🎮 Мэтч #{match_num}\n\n✅ Вы оценили тиммейта: {vote_type}"
+    # Парсим оригинальный текст
+    original_text = message.text or message.caption or ""
+    
+    # Убираем "Оцените тиммейта:" и всё что после
+    if "Оцените тиммейта:" in original_text:
+        base_text = original_text.split("Оцените тиммейта:")[0].strip()
     else:
-        new_text = f"🎮 Мэтч\n\n✅ Вы оценили тиммейта: {vote_type}"
+        base_text = original_text
 
-    # 6. Редактируем сообщение (УБИРАЕМ ВСЕ КНОПКИ)
+    # Новый текст с сохранением скрытой ссылки
+    if chat_link:
+        new_text = f"{base_text}\n\n✅ Вы оценили тиммейта: {vote_type}"
+    else:
+        new_text = f"{base_text}\n\n✅ Вы оценили тиммейта: {vote_type}"
+
+    # Редактируем
     try:
-        bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=new_text,
-            reply_markup=None  # Убираем все кнопки
-        )
+        # Если была ссылка в entities - нужно передать их при редактировании
+        if chat_link:
+            # Создаём entity для ссылки
+            link_text = "👉 Перейти в чат"
+            link_position = base_text.find(link_text)
+            
+            if link_position != -1:
+                entity = {
+                    "type": "text_link",
+                    "offset": link_position,
+                    "length": len(link_text),
+                    "url": chat_link
+                }
+                
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=new_text,
+                    reply_markup=None,
+                    entities=[entity],
+                    disable_web_page_preview=True
+                )
+            else:
+                bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=new_text,
+                    reply_markup=None
+                )
+        else:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                reply_markup=None
+            )
         print(f"✅ Сообщение отредактировано")
     except Exception as e:
         print(f"❌ Ошибка редактирования: {e}")
+        # Fallback - просто меняем текст
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                reply_markup=None
+            )
+        except:
+            pass
 
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
