@@ -2435,7 +2435,7 @@ def reputation_vote():
         callback_data = data['callback_data']
         logger.info(f"📥 Получен callback: {callback_data}")
         
-        # 🔥 Новый формат: vote:up:12345:42
+        # 🔥 Формат: vote:up:12345:42
         parts = callback_data.split(':')
         logger.info(f"🔍 Parts: {parts}")
         
@@ -2449,8 +2449,18 @@ def reputation_vote():
         
         logger.info(f"🗳 Голос: {vote_type} от {voter_telegram_id} за мэтч {match_id}")
         
-        # 🔥 НАХОДИМ ТИММЕЙТА
         with get_db_cursor() as cursor:
+            # 🔥 ЗАЩИТА ОТ НАКРУТКИ - проверяем, не голосовал ли уже
+            cursor.execute("""
+                SELECT id FROM match_votes 
+                WHERE match_id = %s AND voter_telegram_id = %s
+            """, (match_id, voter_telegram_id))
+            
+            if cursor.fetchone():
+                logger.warning(f"⚠️ Пользователь {voter_telegram_id} уже голосовал в матче {match_id}")
+                return jsonify({"status": "error", "message": "Already voted"}), 400
+            
+            # 🔥 НАХОДИМ ТИММЕЙТА
             cursor.execute("""
                 SELECT player1_id, player2_id FROM matches WHERE id = %s
             """, (match_id,))
@@ -2465,7 +2475,7 @@ def reputation_vote():
                 SELECT telegram_id FROM users WHERE player_id IN (%s, %s)
             """, (match['player1_id'], match['player2_id']))
             players = cursor.fetchall()
-            player_ids = [str(p[0]) for p in players]
+            player_ids = [str(p['telegram_id']) for p in players]
             
             logger.info(f"📋 Игроки в матче: {player_ids}")
             
@@ -2475,14 +2485,28 @@ def reputation_vote():
             
             teammate_telegram_id = player_ids[0] if player_ids[1] == voter_telegram_id else player_ids[1]
             logger.info(f"🎯 Тиммейт: {teammate_telegram_id}")
+            
+            # 🔥 ОБНОВЛЯЕМ РЕПУТАЦИЮ
+            delta = 1 if vote_type == 'up' else -1
+            
+            cursor.execute("""
+                UPDATE users 
+                SET reputation = COALESCE(reputation, 0) + %s 
+                WHERE telegram_id = %s
+                RETURNING reputation
+            """, (delta, teammate_telegram_id))
+            
+            new_reputation = cursor.fetchone()['reputation']
+            
+            # 🔥 СОХРАНЯЕМ ГОЛОС (защита от накрутки)
+            cursor.execute("""
+                INSERT INTO match_votes (match_id, voter_telegram_id, vote_type, created_at)
+                VALUES (%s, %s, %s, NOW())
+            """, (match_id, voter_telegram_id, vote_type))
+            
+            logger.info(f"✅ Репутация обновлена: target={teammate_telegram_id}, delta={delta}, new={new_reputation}")
         
-        # Обновляем репутацию
-        delta = 1 if vote_type == 'up' else -1
-        update_reputation(teammate_telegram_id, delta)
-        
-        logger.info(f"✅ Репутация обновлена: target={teammate_telegram_id}, delta={delta}")
-        
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "reputation": new_reputation})
         
     except Exception as e:
         logger.error(f"❌ Ошибка reputation_vote: {e}")
