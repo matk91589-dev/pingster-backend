@@ -1,28 +1,16 @@
 #!/bin/bash
-
-# ============================================
-# ЗАПУСК ВСЕГО В ФОНЕ
-# ============================================
-
 cd /app
 
-# Убиваем старые процессы
-kill $(pgrep -f app.py) 2>/dev/null
-kill $(pgrep -f bot.py) 2>/dev/null
+# Жёстко убиваем ВСЁ
+pkill -9 -f python3 2>/dev/null
+sleep 2
 
-# Запускаем Flask
-nohup python3 app.py > flask.log 2>&1 &
-echo "✅ Flask запущен (PID: $!)"
+# Запускаем Flask на другом порту (5001)
+nohup python3 -m flask run --host=0.0.0.0 --port=5001 > flask.log 2>&1 &
+echo "✅ Flask запущен на порту 5001 (PID: $!)"
 
-# Ждём 3 секунды
 sleep 3
 
 # Запускаем бота
 nohup python3 bot.py > bot.log 2>&1 &
 echo "✅ Бот запущен (PID: $!)"
-
-# Показываем логи
-echo ""
-echo "📋 Смотреть логи Flask:   tail -f /app/flask.log"
-echo "📋 Смотреть логи бота:    tail -f /app/bot.log"
-echo "📋 Все процессы:          pgrep -a python"
