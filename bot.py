@@ -209,7 +209,7 @@ def support_command(message):
     threading.Thread(target=delete_message_later, args=(telegram_id, bot_msg.message_id, 30), daemon=True).start()
 
 # ============================================
-# ВАЖНО: Переместил хендлер удаления В КОНЕЦ и добавил исключения!
+# ОБРАБОТЧИК КНОПОК ФОРУМА
 # ============================================
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_forum")
@@ -263,6 +263,10 @@ def check_forum_callback(call):
             show_alert=True
         )
 
+# ============================================
+# 🔥 ОСНОВНОЙ ХЕНДЛЕР - ГОЛОСОВАНИЕ ЗА РЕПУТАЦИЮ
+# ============================================
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
 def handle_reputation_vote(call):
     message = call.message
@@ -272,41 +276,63 @@ def handle_reputation_vote(call):
 
     vote_type = "👍" if ":up:" in callback_data else "👎"
 
-    print(f"🗳 Голос: {callback_data}")
+    print("=" * 50)
+    print(f"🗳 ГОЛОСОВАНИЕ ЗА РЕПУТАЦИЮ")
+    print(f"📝 Callback: {callback_data}")
+    print(f"💬 Chat ID: {chat_id}")
+    print(f"📨 Message ID: {message_id}")
+    print(f"👍 Голос: {vote_type}")
+    print("=" * 50)
 
-    # 🔹 берём текст / caption
+    # 1. Отправляем в API
+    def send_to_api():
+        try:
+            response = requests.post(
+                f"{API_URL}/reputation/vote",
+                json={"callback_data": callback_data},
+                timeout=5
+            )
+            print(f"📡 API ответ: {response.status_code}")
+        except Exception as e:
+            print(f"❌ API error: {e}")
+
+    threading.Thread(target=send_to_api, daemon=True).start()
+
+    # 2. Получаем оригинальный текст
     original_text = message.text or message.caption or ""
 
-    # 🔹 парсим номер матча (если есть)
+    # 3. Парсим номер матча
     match_part = ""
     if "мэтч #" in original_text:
         try:
             match_part = original_text.split("мэтч #")[1].split()[0]
         except:
-            match_part = ""
+            pass
 
-    # 🔹 новый текст
+    # 4. Создаём новый текст
     if match_part:
-        new_text = f"🎮 Мэтч #{match_part} с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
+        new_text = f"🎮 Мэтч #{match_part}\n\n✅ Вы оценили тиммейта: {vote_type}"
     else:
-        new_text = f"🎮 Мэтч с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
+        new_text = f"🎮 Мэтч\n\n✅ Вы оценили тиммейта: {vote_type}"
 
-    # 🔹 сохраняем кнопку "перейти в чат"
+    # 5. Достаём ссылку на чат из оригинальных кнопок
     chat_link = None
     if message.reply_markup:
         for row in message.reply_markup.inline_keyboard:
             for btn in row:
-                if getattr(btn, "url", None):
+                if btn.url:
                     chat_link = btn.url
                     break
+            if chat_link:
+                break
 
-    # 🔹 новая клавиатура (ТОЛЬКО чат)
+    # 6. Создаём новую клавиатуру ТОЛЬКО с кнопкой чата
     new_markup = None
     if chat_link:
-        new_markup = types.InlineKeyboardMarkup()
-        new_markup.add(types.InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+        new_markup = InlineKeyboardMarkup()
+        new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
 
-    # 🔥 редактируем сообщение (и убираем голосовалку)
+    # 7. Редактируем сообщение
     try:
         if message.text:
             bot.edit_message_text(
@@ -322,37 +348,34 @@ def handle_reputation_vote(call):
                 caption=new_text,
                 reply_markup=new_markup
             )
-
-        print("✅ Сообщение обновлено + голосовалка убрана")
-
+        print("✅ Сообщение отредактировано, кнопки 👍👎 убраны")
     except Exception as e:
-        print(f"❌ Edit error: {e}")
+        print(f"❌ Ошибка редактирования: {e}")
 
-    # 🔹 ответ на callback (убирает "часики")
+    # 8. Отвечаем на callback
     try:
         bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
     except:
         pass
 
 # ============================================
-# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ - ИСПРАВЛЕННАЯ ВЕРСИЯ
-# ДОЛЖЕН БЫТЬ САМЫМ ПОСЛЕДНИМ ХЕНДЛЕРОМ!
+# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
 # ============================================
 
 @bot.message_handler(func=lambda message: True)
 def delete_unknown_messages(message):
-    """Удаляет только текстовые сообщения от пользователей, но не системные"""
+    """Удаляет только текстовые сообщения от пользователей в ЛИЧКЕ"""
     telegram_id = message.from_user.id
     
     # Пропускаем команды
     if message.text and message.text.startswith('/'):
         return
     
-    # Пропускаем сообщения от ботов (на всякий случай)
+    # Пропускаем сообщения от ботов
     if message.from_user.is_bot:
         return
     
-    # Удаляем только в ЛИЧНЫХ чатах, не в группах
+    # Удаляем только в личных чатах
     if message.chat.type == 'private':
         try:
             bot.delete_message(telegram_id, message.message_id)
@@ -368,8 +391,7 @@ if __name__ == '__main__':
     print(f"📡 API: {API_URL}")
     print(f"🌐 FRONTEND: {FRONTEND_URL}")
     print(f"📞 Поддержка: @{SUPPORT_USERNAME}")
-    print("⏳ Проверка сервера при /start")
-    print("👍 Репутация: редактирование сообщений")
+    print("👍 Репутация: редактирование сообщений с удалением кнопок голосования")
     
     bot.remove_webhook()
     
