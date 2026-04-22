@@ -1184,15 +1184,6 @@ def start_search():
             raise NotFoundError("User not found")
         
         with get_db_cursor() as cursor:
-            cursor.execute("""
-                SELECT id FROM matches 
-                WHERE (player1_id = %s OR player2_id = %s) 
-                AND status IN ('pending', 'accepted')
-                AND expires_at > (NOW() AT TIME ZONE 'UTC')
-            """, (player_id, player_id))
-            if cursor.fetchone():
-                raise ConflictError("User already in a match")
-            
             cursor.execute("DELETE FROM search_queue WHERE player_id = %s", (player_id,))
             
             mode = data.get('mode', '').lower()
