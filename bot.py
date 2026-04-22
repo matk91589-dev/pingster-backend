@@ -284,7 +284,7 @@ def handle_reputation_vote(call):
             pass
     threading.Thread(target=send_api, daemon=True).start()
 
-    # Ответ
+    # Ответ на callback
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
 
     # Достаём ссылку на чат
@@ -298,39 +298,48 @@ def handle_reputation_vote(call):
             if chat_link:
                 break
 
-    # Парсим номер матча
+    # Парсим номер матча и имя
     original_text = message.text or ""
     match_num = ""
+    player_name = "pidrilla"
     if "мэтч #" in original_text:
         try:
-            match_num = original_text.split("мэтч #")[1].split()[0]
+            parts = original_text.split("мэтч #")[1].split(" с игроком ")
+            match_num = parts[0]
+            player_name = parts[1].split("\n")[0] if len(parts) > 1 else "pidrilla"
         except:
             pass
 
-    # Новый текст со ссылкой
-    if match_num:
-        if chat_link:
-            new_text = f"🎮 У вас создан мэтч #{match_num} с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}\n\n[👉 Перейти в чат]({chat_link})"
-        else:
-            new_text = f"🎮 У вас создан мэтч #{match_num} с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
+    # 🔥 НОВЫЙ ТЕКСТ БЕЗ КНОПОК, С ССЫЛКОЙ В ТЕКСТЕ
+    if chat_link:
+        new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n[👉 Перейти в чат]({chat_link})\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
     else:
-        if chat_link:
-            new_text = f"🎮 У вас создан мэтч с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}\n\n[👉 Перейти в чат]({chat_link})"
-        else:
-            new_text = f"🎮 У вас создан мэтч с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
+        new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
 
-    # Редактируем сообщение, УБИРАЕМ ВСЕ КНОПКИ
+    # 🔥 РЕДАКТИРУЕМ, УБИРАЕМ ВСЕ КНОПКИ
     try:
         bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
             text=new_text,
-            reply_markup=None,  # 🔥 УБИРАЕМ ВСЕ КНОПКИ НАХУЙ
-            parse_mode="Markdown"  # 🔥 ЧТОБЫ ССЫЛКА РАБОТАЛА
+            reply_markup=None,  # Убираем все кнопки
+            parse_mode="Markdown"
         )
-        print("✅ Сообщение обновлено, кнопки удалены")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        # Если Markdown не сработал - без ссылки
+        if chat_link:
+            new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n👉 Перейти в чат: {chat_link}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
+        else:
+            new_text = f"🎮 У вас создан мэтч #{match_num} с игроком {player_name}\n\n✅ Вы поставили оценку тиммейту: {vote_type}"
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                reply_markup=None
+            )
+        except:
+            pass
 
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
