@@ -265,70 +265,74 @@ def check_forum_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
 def handle_reputation_vote(call):
-    """Обрабатывает голоса за репутацию и ОБНОВЛЯЕТ сообщение"""
-    user_id = call.from_user.id
-    callback_data = call.data
     message = call.message
     chat_id = message.chat.id
     message_id = message.message_id
-    
+    callback_data = call.data
+
     vote_type = "👍" if ":up:" in callback_data else "👎"
-    
-    print(f"🗳 Получен голос: {callback_data}")
-    
-    # 1. Отвечаем на callback
-    bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-    
-    # 2. Отправляем в API (в отдельном потоке)
-    def send_to_api():
+
+    print(f"🗳 Голос: {callback_data}")
+
+    # 🔹 берём текст / caption
+    original_text = message.text or message.caption or ""
+
+    # 🔹 парсим номер матча (если есть)
+    match_part = ""
+    if "мэтч #" in original_text:
         try:
-            response = requests.post(
-                f'{API_URL}/reputation/vote',
-                json={'callback_data': callback_data},
-                timeout=10
-            )
-            print(f"📡 API ответ: {response.status_code}")
-        except Exception as e:
-            print(f"❌ Ошибка API: {e}")
-    
-    threading.Thread(target=send_to_api, daemon=True).start()
-    
-    # 3. Извлекаем ссылку на чат из текущих кнопок
+            match_part = original_text.split("мэтч #")[1].split()[0]
+        except:
+            match_part = ""
+
+    # 🔹 новый текст
+    if match_part:
+        new_text = f"🎮 Мэтч #{match_part} с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
+    else:
+        new_text = f"🎮 Мэтч с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
+
+    # 🔹 сохраняем кнопку "перейти в чат"
     chat_link = None
     if message.reply_markup:
         for row in message.reply_markup.inline_keyboard:
             for btn in row:
-                if btn.url:
+                if getattr(btn, "url", None):
                     chat_link = btn.url
                     break
-            if chat_link:
-                break
-    
-    # 4. Извлекаем номер матча из текста
-    original_text = message.text or message.caption or ""
-    match_num = ""
-    if "мэтч #" in original_text:
-        match_num = original_text.split("мэтч #")[1].split()[0]
-        new_text = f"🎮 У вас создан мэтч #{match_num} с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
-    else:
-        new_text = f"🎮 У вас создан мэтч с игроком pidrilla\n\n✅ Вы оценили тиммейта: {vote_type}"
-    
-    # 5. Создаём новую клавиатуру ТОЛЬКО с кнопкой чата
-    new_markup = InlineKeyboardMarkup()
+
+    # 🔹 новая клавиатура (ТОЛЬКО чат)
+    new_markup = None
     if chat_link:
-        new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-    
-    # 6. РЕДАКТИРУЕМ сообщение (не удаляем!)
+        new_markup = types.InlineKeyboardMarkup()
+        new_markup.add(types.InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
+
+    # 🔥 редактируем сообщение (и убираем голосовалку)
     try:
-        bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=new_text,
-            reply_markup=new_markup
-        )
-        print(f"✅ Сообщение {message_id} отредактировано")
+        if message.text:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                reply_markup=new_markup
+            )
+        else:
+            bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=new_text,
+                reply_markup=new_markup
+            )
+
+        print("✅ Сообщение обновлено + голосовалка убрана")
+
     except Exception as e:
-        print(f"❌ Ошибка редактирования: {e}")
+        print(f"❌ Edit error: {e}")
+
+    # 🔹 ответ на callback (убирает "часики")
+    try:
+        bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
+    except:
+        pass
 
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ - ИСПРАВЛЕННАЯ ВЕРСИЯ
