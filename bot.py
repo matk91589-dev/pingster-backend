@@ -268,7 +268,6 @@ def check_forum_callback(call):
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
 def handle_reputation_vote(call):
-    import sys
     from datetime import datetime
     
     message = call.message
@@ -278,142 +277,36 @@ def handle_reputation_vote(call):
 
     vote_type = "👍" if ":up:" in callback_data else "👎"
 
-    # 🔥 ПРИНУДИТЕЛЬНАЯ ЗАПИСЬ В ФАЙЛ
-    log_msg = f"""
-{'='*50}
-🔥 ХЕНДЛЕР СРАБОТАЛ! Время: {datetime.now()}
-📝 Callback: {callback_data}
-👤 User: {call.from_user.id}
-💬 Chat ID: {chat_id}
-📨 Message ID: {message_id}
-👍 Голос: {vote_type}
-📄 Текст сообщения: {message.text[:100] if message.text else 'NO TEXT'}
-⌨️ Есть клавиатура: {message.reply_markup is not None}
-{'='*50}
-"""
-    
-    # Пишем в файл
     with open('/app/bot_debug.log', 'a') as f:
-        f.write(log_msg)
-    
-    # И в консоль
-    print(log_msg)
-    sys.stdout.flush()
-
-    # 1. Отправляем в API (в фоне)
-    def send_to_api():
-        try:
-            response = requests.post(
-                f"{API_URL}/reputation/vote",
-                json={"callback_data": callback_data},
-                timeout=5
-            )
-            msg = f"📡 API ответ: {response.status_code}\n"
-            with open('/app/bot_debug.log', 'a') as f:
-                f.write(msg)
-            print(msg)
-        except Exception as e:
-            msg = f"❌ API error: {e}\n"
-            with open('/app/bot_debug.log', 'a') as f:
-                f.write(msg)
-            print(msg)
-
-    threading.Thread(target=send_to_api, daemon=True).start()
-
-    # 2. Получаем оригинальный текст
-    original_text = message.text or message.caption or ""
-
-    # 3. Парсим номер матча
-    match_part = ""
-    if "мэтч #" in original_text:
-        try:
-            match_part = original_text.split("мэтч #")[1].split()[0]
-        except:
-            pass
-
-    # 4. Создаём новый текст
-    if match_part:
-        new_text = f"🎮 Мэтч #{match_part}\n\n✅ Вы оценили тиммейта: {vote_type}"
-    else:
-        new_text = f"🎮 Мэтч\n\n✅ Вы оценили тиммейта: {vote_type}"
-
-    # 5. Достаём ссылку на чат
-    chat_link = None
-    if message.reply_markup:
-        for row in message.reply_markup.inline_keyboard:
-            for btn in row:
-                if btn.url:
-                    chat_link = btn.url
-                    break
-            if chat_link:
-                break
-
-    # 6. Создаём новую клавиатуру
-    new_markup = None
-    if chat_link:
-        new_markup = InlineKeyboardMarkup()
-        new_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-
-    # 7. ПРОБУЕМ РЕДАКТИРОВАТЬ
-    try:
-        if message.text:
-            result = bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=new_text,
-                reply_markup=new_markup
-            )
-        else:
-            result = bot.edit_message_caption(
-                chat_id=chat_id,
-                message_id=message_id,
-                caption=new_text,
-                reply_markup=new_markup
-            )
+        f.write(f"\n{'='*50}\n")
+        f.write(f"🔄 НАЧАЛО РЕДАКТИРОВАНИЯ\n")
+        f.write(f"Chat ID: {chat_id}, Message ID: {message_id}\n")
         
-        msg = f"✅✅✅ СООБЩЕНИЕ ОТРЕДАКТИРОВАНО! Result: {result}\n"
-        with open('/app/bot_debug.log', 'a') as f:
-            f.write(msg)
-        print(msg)
+        # 1. API в фоне
+        import threading
+        def send_api():
+            try:
+                requests.post(f"{API_URL}/reputation/vote", json={"callback_data": callback_data}, timeout=3)
+            except:
+                pass
+        threading.Thread(target=send_api, daemon=True).start()
         
-    except Exception as e:
-        msg = f"❌❌❌ ОШИБКА РЕДАКТИРОВАНИЯ: {type(e).__name__}: {str(e)}\n"
-        with open('/app/bot_debug.log', 'a') as f:
-            f.write(msg)
-        print(msg)
-        
-        # 🔥 FALLBACK: пробуем удалить и отправить новое
-        try:
-            bot.delete_message(chat_id, message_id)
-            bot.send_message(
-                chat_id=chat_id,
-                text=new_text,
-                reply_markup=new_markup
-            )
-            msg = "✅ FALLBACK: старое удалено, новое отправлено\n"
-            with open('/app/bot_debug.log', 'a') as f:
-                f.write(msg)
-            print(msg)
-        except Exception as e2:
-            msg = f"❌ Даже fallback не сработал: {e2}\n"
-            with open('/app/bot_debug.log', 'a') as f:
-                f.write(msg)
-            print(msg)
-
-    # 8. Отвечаем на callback
-    try:
+        # 2. Ответ на callback
         bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
-        msg = "✅ Callback answered\n"
-        with open('/app/bot_debug.log', 'a') as f:
-            f.write(msg)
-        print(msg)
-    except Exception as e:
-        msg = f"❌ Ошибка answer_callback: {e}\n"
-        with open('/app/bot_debug.log', 'a') as f:
-            f.write(msg)
-        print(msg)
-    
-    sys.stdout.flush()
+        f.write(f"✅ Callback answered\n")
+        
+        # 3. ПРОБУЕМ ПРОСТО ПОМЕНЯТЬ ТЕКСТ (без клавиатуры)
+        try:
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"ТЕСТ: голос {vote_type}"
+            )
+            f.write(f"✅✅✅ ТЕКСТ ИЗМЕНЁН!\n")
+        except Exception as e:
+            f.write(f"❌❌❌ ОШИБКА: {type(e).__name__}: {e}\n")
+        
+        f.write(f"{'='*50}\n")
 
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
