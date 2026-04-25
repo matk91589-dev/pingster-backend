@@ -94,35 +94,6 @@ def is_user_in_forum(user_id):
     except:
         return False
 
-def save_temp_message(user_id, message_id):
-    temp_messages[user_id] = message_id
-
-def delete_temp_message(user_id):
-    if user_id in temp_messages:
-        try:
-            bot.delete_message(user_id, temp_messages[user_id])
-        except:
-            pass
-        del temp_messages[user_id]
-
-def send_forum_invite(user_id):
-    """Отправляет приглашение вступить в форум"""
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(InlineKeyboardButton("📢 Вступить в форум Pingster", url=FORUM_LINK))
-    markup.add(InlineKeyboardButton("✅ Я вступил, продолжить", callback_data="check_forum"))
-    
-    msg = bot.send_message(
-        user_id,
-        "🎮 **Добро пожаловать в Pingster!**\n\n"
-        "Для начала нужно вступить в наш форум:\n\n"
-        "1. Нажми **«Вступить в форум»**\n"
-        "2. Нажми **«Я вступил, продолжить»**\n\n"
-        "После этого откроется главное меню!",
-        parse_mode='Markdown',
-        reply_markup=markup
-    )
-    save_temp_message(user_id, msg.message_id)
-
 def register_user(telegram_id, username):
     """Регистрирует пользователя в API"""
     try:
@@ -157,17 +128,15 @@ def start(message):
         wake_up_server()
         bot_msg = bot.send_message(
             telegram_id,
-            " ♻️ **загрузка сервера**\n\n"
+            "♻️ **загрузка сервера**\n\n"
             "Пожалуйста, подождите 5 секунд и нажмите /start снова.",
             parse_mode='Markdown'
         )
         save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
         return
     
-    # Проверяем форум
-    if not is_user_in_forum(telegram_id):
-        send_forum_invite(telegram_id)
-        return
+    # 🔥 УБИРАЕМ ПРОВЕРКУ ФОРУМА — СРАЗУ ПОКАЗЫВАЕМ МЕНЮ
+    # Раньше тут было: if not is_user_in_forum(telegram_id): send_forum_invite(telegram_id); return
     
     # Регистрируем пользователя
     player_id = register_user(telegram_id, username)
@@ -209,61 +178,6 @@ def support_command(message):
     threading.Thread(target=delete_message_later, args=(telegram_id, bot_msg.message_id, 30), daemon=True).start()
 
 # ============================================
-# ОБРАБОТЧИК КНОПОК ФОРУМА
-# ============================================
-
-@bot.callback_query_handler(func=lambda call: call.data == "check_forum")
-def check_forum_callback(call):
-    user_id = call.from_user.id
-    username = call.from_user.username or 'юзер'
-    
-    print(f"🔍 Проверка форума для {user_id} (@{username})")
-    
-    if is_user_in_forum(user_id):
-        print(f"✅ {user_id} в форуме!")
-        delete_temp_message(user_id)
-        
-        try:
-            bot.delete_message(user_id, call.message.message_id)
-        except:
-            pass
-        
-        player_id = register_user(user_id, username)
-        
-        text = f"***@{username}***\n"
-        text += f"Добро пожаловать в Pingster!\n\n"
-        text += f"👤 твой игровой id: {player_id or '—'}\n\n"
-        text += f"👇 Нажми кнопку ниже, чтобы начать:"
-        
-        cache_buster = int(time.time())
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(
-            text="🚀 ЗАПУСТИТЬ",
-            web_app=WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={user_id}')
-        ))
-        
-        try:
-            new_msg = bot.send_message(user_id, text, parse_mode='Markdown', reply_markup=markup)
-            print(f"✅ Меню отправлено, msg_id: {new_msg.message_id}")
-            
-            if user_id not in user_messages:
-                user_messages[user_id] = {}
-            user_messages[user_id]['start'] = {'user': 0, 'bot': new_msg.message_id}
-        except:
-            plain_text = f"@{username}\nДобро пожаловать в Pingster!\n\n👤 твой игровой id: {player_id or '—'}\n\n👇 Нажми кнопку ниже, чтобы начать:"
-            new_msg = bot.send_message(user_id, plain_text, reply_markup=markup)
-            
-            if user_id not in user_messages:
-                user_messages[user_id] = {}
-            user_messages[user_id]['start'] = {'user': 0, 'bot': new_msg.message_id}
-    else:
-        bot.answer_callback_query(
-            call.id,
-            "❌ Ты ещё не в форуме! Сначала нажми «Вступить в форум»",
-            show_alert=True
-        )
-
-# ============================================
 # 🔥 ОСНОВНОЙ ХЕНДЛЕР - ГОЛОСОВАНИЕ ЗА РЕПУТАЦИЮ
 # ============================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vote:'))
@@ -293,7 +207,7 @@ def handle_reputation_vote(call):
     # Ответ на callback
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
 
-    # Получаем ссылку на чат из ОРИГИНАЛЬНОГО ТЕКСТА (через entities)
+    # Получаем ссылку на чат
     chat_link = None
     if message.entities:
         for entity in message.entities:
@@ -301,7 +215,6 @@ def handle_reputation_vote(call):
                 chat_link = entity.url
                 break
 
-    # Если не нашли в entities - ищем в reply_markup
     if not chat_link and message.reply_markup:
         keyboard = message.reply_markup.keyboard
         for row in keyboard:
@@ -315,13 +228,12 @@ def handle_reputation_vote(call):
     # Парсим оригинальный текст
     original_text = message.text or message.caption or ""
     
-    # Убираем "Оцените тиммейта:" и всё что после
     if "Оцените тиммейта:" in original_text:
         base_text = original_text.split("Оцените тиммейта:")[0].strip()
     else:
         base_text = original_text
 
-    # Новый текст с сохранением скрытой ссылки
+    # Новый текст
     if chat_link:
         new_text = f"{base_text}\n\n✅ Вы оценили тиммейта: {vote_type}"
     else:
@@ -329,9 +241,7 @@ def handle_reputation_vote(call):
 
     # Редактируем
     try:
-        # Если была ссылка в entities - нужно передать их при редактировании
         if chat_link:
-            # Создаём entity для ссылки
             link_text = "👉 Перейти в чат"
             link_position = base_text.find(link_text)
             
@@ -368,7 +278,6 @@ def handle_reputation_vote(call):
         print(f"✅ Сообщение отредактировано")
     except Exception as e:
         print(f"❌ Ошибка редактирования: {e}")
-        # Fallback - просто меняем текст
         try:
             bot.edit_message_text(
                 chat_id=chat_id,
@@ -382,21 +291,16 @@ def handle_reputation_vote(call):
 # ============================================
 # УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
 # ============================================
-
 @bot.message_handler(func=lambda message: True)
 def delete_unknown_messages(message):
-    """Удаляет только текстовые сообщения от пользователей в ЛИЧКЕ"""
     telegram_id = message.from_user.id
     
-    # Пропускаем команды
     if message.text and message.text.startswith('/'):
         return
     
-    # Пропускаем сообщения от ботов
     if message.from_user.is_bot:
         return
     
-    # Удаляем только в личных чатах
     if message.chat.type == 'private':
         try:
             bot.delete_message(telegram_id, message.message_id)
@@ -413,6 +317,7 @@ if __name__ == '__main__':
     print(f"🌐 FRONTEND: {FRONTEND_URL}")
     print(f"📞 Поддержка: @{SUPPORT_USERNAME}")
     print("👍 Репутация: редактирование сообщений с удалением кнопок голосования")
+    print("🔓 Форум: отложенная проверка (в Mini App)")
     
     bot.remove_webhook()
     
