@@ -1135,42 +1135,50 @@ def user_init():
         telegram_id = data['telegram_id']
         username = data.get('username', '')
         
-        # 🔥 СНАЧАЛА ПРОВЕРЯЕМ БД НАПРЯМУЮ (без кеша!)
-        player_id = None
+        # 🔥 ПРОВЕРЯЕМ БД ПРЯМО (отдельная транзакция)
         try:
             with get_db_cursor() as check_cursor:
                 check_cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
                 row = check_cursor.fetchone()
                 if row:
                     player_id = row['player_id']
+                    update_user_activity(telegram_id)
+                    cache.set(f"player_id:{telegram_id}", player_id)
+                    return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
         except Exception as e:
             logger.error(f"Ошибка проверки пользователя: {e}")
         
-        # Если нашли в БД — обновляем активность и кеш
-        if player_id:
-            update_user_activity(telegram_id)
-            cache.set(f"player_id:{telegram_id}", player_id)
-            return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
-        
-        # 🔥 НОВЫЙ ПОЛЬЗОВАТЕЛЬ — создаём
+        # 🔥 НОВЫЙ ПОЛЬЗОВАТЕЛЬ
         player_id = generate_player_id()
         nick = username if username and len(username) <= 32 else generate_random_nick()
         
+        # 🔥 СОЗДАЁМ В ОДНОЙ ТРАНЗАКЦИИ
         with get_db_cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online, leadercoins)
-                VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC'), TRUE, 1000)
-            """, (telegram_id, player_id))
-            
-            cursor.execute("""
-                INSERT INTO profiles (player_id, nick, avatar, created_at)
-                VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
-            """, (player_id, nick, None))
+            try:
+                cursor.execute("""
+                    INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online, leadercoins)
+                    VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC'), TRUE, 1000)
+                """, (telegram_id, player_id))
+                
+                cursor.execute("""
+                    INSERT INTO profiles (player_id, nick, avatar, created_at)
+                    VALUES (%s, %s, NULL, (NOW() AT TIME ZONE 'UTC'))
+                """, (player_id, nick))
+                
+                logger.info(f"✅ Новый пользователь: telegram_id={telegram_id}, player_id={player_id}")
+                
+            except Exception as insert_error:
+                # 🔥 ЕСЛИ ОШИБКА — ВОЗМОЖНО ДУБЛИКАТ, ПРОВЕРЯЕМ ЕЩЁ РАЗ
+                logger.error(f"Ошибка вставки: {insert_error}")
+                cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+                row = cursor.fetchone()
+                if row:
+                    player_id = row['player_id']
+                    cache.set(f"player_id:{telegram_id}", player_id)
+                    return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
+                raise insert_error
         
-        # Сохраняем в кеш
         cache.set(f"player_id:{telegram_id}", player_id)
-        
-        logger.info(f"✅ Новый пользователь: telegram_id={telegram_id}, player_id={player_id}")
         
         return jsonify({
             "status": "ok",
