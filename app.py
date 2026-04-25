@@ -1160,16 +1160,17 @@ def user_init():
                     VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC'), TRUE, 1000)
                 """, (telegram_id, player_id))
                 
+                # 🔥 В profiles ТОЖЕ передаём telegram_id!
                 cursor.execute("""
-                    INSERT INTO profiles (player_id, nick, avatar, created_at)
-                    VALUES (%s, %s, NULL, (NOW() AT TIME ZONE 'UTC'))
-                """, (player_id, nick))
+                    INSERT INTO profiles (player_id, telegram_id, nick, created_at)
+                    VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
+                """, (player_id, telegram_id, nick))
                 
                 logger.info(f"✅ Новый пользователь: telegram_id={telegram_id}, player_id={player_id}")
                 
             except Exception as insert_error:
-                # 🔥 ЕСЛИ ОШИБКА — ВОЗМОЖНО ДУБЛИКАТ, ПРОВЕРЯЕМ ЕЩЁ РАЗ
                 logger.error(f"Ошибка вставки: {insert_error}")
+                # Если ошибка — возможно дубликат, проверяем ещё раз
                 cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
                 row = cursor.fetchone()
                 if row:
