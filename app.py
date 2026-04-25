@@ -1124,6 +1124,7 @@ def get_avatar():
         raise AppError(str(e), 500, "INTERNAL_ERROR")
 
 # ---------- ПОЛЬЗОВАТЕЛЬ ----------
+# ---------- ПОЛЬЗОВАТЕЛЬ ----------
 @app.route('/api/user/init', methods=['POST'])
 @rate_limit(limit=10, window=60)
 def user_init():
@@ -1135,24 +1136,20 @@ def user_init():
         telegram_id = data['telegram_id']
         username = data.get('username', '')
         
-        # 🔥 ПРОВЕРЯЕМ БД ПРЯМО (отдельная транзакция)
-        try:
-            with get_db_cursor() as check_cursor:
-                check_cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
-                row = check_cursor.fetchone()
-                if row:
-                    player_id = row['player_id']
-                    update_user_activity(telegram_id)
-                    cache.set(f"player_id:{telegram_id}", player_id)
-                    return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
-        except Exception as e:
-            logger.error(f"Ошибка проверки пользователя: {e}")
+        # 🔥 ПРОВЕРЯЕМ БД НАПРЯМУЮ (одна транзакция)
+        with get_db_cursor() as check_cursor:
+            check_cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+            row = check_cursor.fetchone()
+            if row:
+                player_id = row['player_id']
+                update_user_activity(telegram_id)
+                cache.set(f"player_id:{telegram_id}", player_id)
+                return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
         
-        # 🔥 НОВЫЙ ПОЛЬЗОВАТЕЛЬ
+        # 🔥 НОВЫЙ ПОЛЬЗОВАТЕЛЬ — пробуем вставить
         player_id = generate_player_id()
         nick = username if username and len(username) <= 32 else generate_random_nick()
         
-        # 🔥 СОЗДАЁМ В ОДНОЙ ТРАНЗАКЦИИ
         with get_db_cursor() as cursor:
             try:
                 cursor.execute("""
@@ -1160,7 +1157,6 @@ def user_init():
                     VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC'), (NOW() AT TIME ZONE 'UTC'), TRUE, 1000)
                 """, (telegram_id, player_id))
                 
-                # 🔥 В profiles ТОЖЕ передаём telegram_id!
                 cursor.execute("""
                     INSERT INTO profiles (player_id, telegram_id, nick, created_at)
                     VALUES (%s, %s, %s, (NOW() AT TIME ZONE 'UTC'))
@@ -1169,14 +1165,21 @@ def user_init():
                 logger.info(f"✅ Новый пользователь: telegram_id={telegram_id}, player_id={player_id}")
                 
             except Exception as insert_error:
-                logger.error(f"Ошибка вставки: {insert_error}")
-                # Если ошибка — возможно дубликат, проверяем ещё раз
-                cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
-                row = cursor.fetchone()
-                if row:
-                    player_id = row['player_id']
-                    cache.set(f"player_id:{telegram_id}", player_id)
-                    return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
+                # 🔥 ЕСЛИ ДУБЛИКАТ — ЗНАЧИТ ДРУГОЙ ЗАПРОС УЖЕ СОЗДАЛ
+                logger.warning(f"Возможен дубликат: {insert_error}")
+                
+                # Пробуем найти созданную запись
+                try:
+                    with get_db_cursor() as find_cursor:
+                        find_cursor.execute("SELECT player_id FROM users WHERE telegram_id = %s", (telegram_id,))
+                        row = find_cursor.fetchone()
+                        if row:
+                            player_id = row['player_id']
+                            cache.set(f"player_id:{telegram_id}", player_id)
+                            return jsonify({"status": "ok", "player_id": player_id, "is_new": False})
+                except:
+                    pass
+                
                 raise insert_error
         
         cache.set(f"player_id:{telegram_id}", player_id)
