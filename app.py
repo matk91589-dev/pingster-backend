@@ -578,6 +578,20 @@ def check_user_in_forum(user_id: str) -> bool:
 def send_match_notification(telegram_id, display_id, actual_match_id, teammate_nick, chat_link):
     """Отправляет личное сообщение игроку с кнопками оценки"""
     try:
+        # 🔥 Проверяем в форуме ли юзер
+        in_forum = False
+        try:
+            check = requests.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember",
+                params={"chat_id": FORUM_GROUP_ID, "user_id": telegram_id},
+                timeout=5
+            )
+            if check.ok:
+                status = check.json()['result']['status']
+                in_forum = status in ['member', 'administrator', 'creator']
+        except:
+            pass
+        
         # 🔥 Клавиатура ТОЛЬКО с кнопками голосования
         keyboard = {
             "inline_keyboard": [
@@ -588,12 +602,21 @@ def send_match_notification(telegram_id, display_id, actual_match_id, teammate_n
             ]
         }
         
-        # 🔥 Текст со скрытой ссылкой в Markdown
-        message = (
-            f"🎮 У вас создан мэтч #{display_id} с игроком {teammate_nick}\n\n"
-            f"[👉 Перейти в чат]({chat_link})\n\n"
-            f"Оцените тиммейта:"
-        )
+        # 🔥 Текст зависит от того в форуме ли юзер
+        if in_forum:
+            message = (
+                f"🎮 У вас создан мэтч #{display_id} с игроком {teammate_nick}\n\n"
+                f"[👉 Перейти в чат]({chat_link})\n\n"
+                f"Оцените тиммейта:"
+            )
+        else:
+            message = (
+                f"🎮 У вас создан мэтч #{display_id} с игроком {teammate_nick}\n\n"
+                f"1️⃣ [Вступить в форум](https://t.me/pingster_team)\n"
+                f"2️⃣ [Перейти в чат матча]({chat_link})\n\n"
+                f"⚠️ Сначала вступи в форум, потом перейди в чат!\n\n"
+                f"Оцените тиммейта:"
+            )
         
         response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -602,7 +625,7 @@ def send_match_notification(telegram_id, display_id, actual_match_id, teammate_n
                 "text": message,
                 "reply_markup": keyboard,
                 "parse_mode": "Markdown",
-                "disable_web_page_preview": True  # 🔥 Чтобы не было превью ссылки
+                "disable_web_page_preview": True
             },
             timeout=5
         )
@@ -614,28 +637,6 @@ def send_match_notification(telegram_id, display_id, actual_match_id, teammate_n
             
     except Exception as e:
         logger.error(f"❌ Ошибка send_match_notification: {e}")
-
-def update_reputation(telegram_id, delta):
-    """Обновляет репутацию (rating) и leadercoins пользователя"""
-    try:
-        # За положительную оценку +75 leadercoins, за отрицательную -50
-        coins_delta = 75 if delta > 0 else -50
-        
-        with get_db_cursor() as cursor:
-            cursor.execute("""
-                UPDATE users 
-                SET rating = COALESCE(rating, 0) + %s,
-                    leadercoins = COALESCE(leadercoins, 0) + %s
-                WHERE telegram_id = %s
-                RETURNING rating, leadercoins
-            """, (delta, coins_delta, telegram_id))
-            result = cursor.fetchone()
-            if result:
-                logger.info(f"✅ Рейтинг: {result[0]}, Leadercoins: {result[1]} для {telegram_id}")
-            else:
-                logger.warning(f"⚠️ Пользователь {telegram_id} не найден")
-    except Exception as e:
-        logger.error(f"❌ Ошибка update_reputation: {e}")
 
 # ============================================
 # ОБРАБОТЧИКИ ОШИБОК
