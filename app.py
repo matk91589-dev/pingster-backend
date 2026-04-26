@@ -18,12 +18,9 @@ import psycopg2
 import psycopg2.extras
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 
 os.environ['PGSSLMODE'] = 'require'
 os.environ['PGCONNECT_TIMEOUT'] = '30'
-
-load_dotenv()
 
 # ============================================
 # КОНФИГУРАЦИЯ
