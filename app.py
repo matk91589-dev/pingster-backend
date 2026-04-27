@@ -513,10 +513,14 @@ def handle_500(e):
     return jsonify({"error": "Internal server error"}), 500
 
 # ============================================
-# ЗАПУСК
+# ДЛЯ GUNICORN (PRODUCTION)
 # ============================================
+if db_pool is None:
+    init_db_pool()
+
+application = app
+
 if __name__ == '__main__':
-    if db_pool is None: init_db_pool()
     port = int(os.environ.get('PORT', 5000))
     print(f"🔥 PINGSTER v2.0 на порту {port}")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
