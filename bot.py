@@ -96,7 +96,7 @@ def start(message):
         save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
         return
     
-    # 🔥 ВСЕГДА регистрируем пользователя (чтобы узнать кто заходил)
+    # 🔥 ВСЕГДА регистрируем пользователя
     player_id = register_user(telegram_id, username)
     
     # 🔥 ПРОВЕРКА ДОСТУПА
@@ -105,13 +105,12 @@ def start(message):
         text += f"Добро пожаловать в Pingster!\n\n"
         text += f"👤 твой игровой id: {player_id or '—'}\n\n"
         text += f"🚧 Приложение пока в разработке.\n\n"
-        text += f"Скоро запустимся для всех!\n"
-        text += f"Подпишись на канал чтобы не пропустить: @pingster_team_channel"
+        text += f"👇 Перейти в канал"
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(
-            text="💬 Перейти в чат",
-            url=FORUM_LINK
+            text="📢 Telegram канал",
+            url="https://t.me/pingster_team_channel"
         ))
         
         bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
@@ -132,24 +131,6 @@ def start(message):
     
     bot_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
     save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
-
-@bot.message_handler(commands=['support'])
-def support_command(message):
-    telegram_id = message.from_user.id
-    user_msg_id = message.message_id
-    
-    delete_old_command(telegram_id, 'support')
-    
-    text = f"📞 **Поддержка Pingster**\n\n👇 написать в поддержку"
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(
-        text="💬 ПОДДЕРЖКА",
-        url=f"https://t.me/{SUPPORT_USERNAME}"
-    ))
-    
-    bot_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
-    save_command_message(telegram_id, 'support', user_msg_id, bot_msg.message_id)
 
 # ============================================
 # ГОЛОСОВАНИЕ ЗА РЕПУТАЦИЮ
