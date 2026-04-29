@@ -104,7 +104,7 @@ def start(message):
         text = f"***@{username}***\n"
         text += f"Добро пожаловать в Pingster!\n\n"
         text += f"👤 твой игровой id: {player_id or '—'}\n\n"
-        text += f"🚧 Приложение пока в разработке.\n\n"
+        text += f"🚧 Приложение пока в разработке.\n"
         text += f"👇 Перейти в канал"
         
         markup = InlineKeyboardMarkup()
