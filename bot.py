@@ -85,16 +85,6 @@ def start(message):
     
     delete_old_command(telegram_id, 'start')
     
-    # 🔥 ПРОВЕРКА ДОСТУПА
-    if telegram_id not in ALLOWED_USERS:
-        bot.send_message(
-            telegram_id,
-            "🚧 Приложение пока в разработке.\n\n"
-            "Скоро запустимся для всех!\n"
-            "Подпишись на канал чтобы не пропустить: @pingster_team_channel"
-        )
-        return
-    
     if not check_server_awake():
         wake_up_server()
         bot_msg = bot.send_message(
@@ -106,8 +96,28 @@ def start(message):
         save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
         return
     
+    # 🔥 ВСЕГДА регистрируем пользователя (чтобы узнать кто заходил)
     player_id = register_user(telegram_id, username)
     
+    # 🔥 ПРОВЕРКА ДОСТУПА
+    if telegram_id not in ALLOWED_USERS:
+        text = f"***@{username}***\n"
+        text += f"Добро пожаловать в Pingster!\n\n"
+        text += f"👤 твой игровой id: {player_id or '—'}\n\n"
+        text += f"🚧 Приложение пока в разработке.\n\n"
+        text += f"Скоро запустимся для всех!\n"
+        text += f"Подпишись на канал чтобы не пропустить: @pingster_team_channel"
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(
+            text="💬 Перейти в чат",
+            url=FORUM_LINK
+        ))
+        
+        bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
+        return
+    
+    # ТЕСТЕРЫ — полный доступ
     text = f"***@{username}***\n"
     text += f"Добро пожаловать в Pingster!\n\n"
     text += f"👤 твой игровой id: {player_id or '—'}\n\n"
@@ -218,6 +228,7 @@ def delete_unknown_messages(message):
 if __name__ == '__main__':
     print("🤖 Pingster бот запущен!")
     print("🔒 Режим тестирования — доступ только у избранных")
+    print("📊 Все новые пользователи регистрируются в БД")
     bot.remove_webhook()
     while True:
         try:
