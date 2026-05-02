@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 
-# 🔥 Фикс CORS для OPTIONS запросов
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -330,43 +329,6 @@ def update_avatar():
     return jsonify({"status": "ok", "avatar": u[0] if u else None})
 
 # ---------- АНКЕТЫ (profiles_extra) ----------
-@app.route('/api/anketa/create', methods=['POST'])
-@rate_limit(10, 60)
-def create_anketa():
-    data = request.json
-    if not data or 'telegram_id' not in data or 'mode' not in data: raise ValidationError("Missing fields")
-    pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
-    
-    mode = data['mode'].lower()
-    if mode not in ('faceit','premier','prime','public'): raise ValidationError("Invalid mode")
-    
-    rank = data.get('rank', '')
-    about = data.get('about', '')
-    
-    # Обновляем профиль если переданы
-    if data.get('age'):
-        with get_db_cursor() as c:
-            c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(data['age']), pid))
-    for link_type in ('steam_link', 'faceit_link'):
-        if data.get(link_type):
-            with get_db_cursor() as c:
-                c.execute(f"UPDATE profiles SET {link_type}=%s WHERE player_id=%s", (data[link_type], pid))
-    cache.delete(f"prof:{pid}")
-    
-    with get_db_cursor() as c:
-        c.execute("SELECT id FROM profiles_extra WHERE player_id=%s AND mode=%s AND is_active=TRUE", (pid, mode))
-        existing = c.fetchone()
-        if existing:
-            c.execute("UPDATE profiles_extra SET rank=%s, about=%s, updated_at=NOW() WHERE id=%s RETURNING id", (rank, about, existing[0]))
-        else:
-            c.execute("INSERT INTO profiles_extra (player_id, mode, rank, about) VALUES (%s,%s,%s,%s) RETURNING id", (pid, mode, rank, about))
-        anketa_id = c.fetchone()[0]
-    
-    return jsonify({"status": "ok", "anketa_id": anketa_id})
-
-# ---------- АНКЕТЫ (profiles_extra) ----------
-
 @app.route('/api/anketa/list', methods=['POST'])
 def list_anketas():
     data = request.json
@@ -424,7 +386,7 @@ def create_anketa():
         with get_db_cursor() as c:
             c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(age), pid))
     
-    # Определяем тип ссылки и сохраняем в профиль
+    # Сохраняем ссылку в профиль
     if link:
         link_type = 'faceit_link' if mode == 'faceit' else 'steam_link'
         with get_db_cursor() as c:
@@ -527,40 +489,6 @@ def get_next_anketa():
     
     return jsonify({"status": "ok", "anketa": dict(r)})
 
-@app.route('/api/anketa/next', methods=['POST'])
-def get_next_anketa():
-    data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
-    mode = data.get('mode', '').lower()
-    pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
-    
-    with get_db_cursor() as c:
-        if mode and mode != 'all':
-            c.execute("""
-                SELECT pe.*, p.nick, p.age, p.steam_link, p.faceit_link, p.avatar
-                FROM profiles_extra pe
-                JOIN profiles p ON pe.player_id = p.player_id
-                WHERE pe.is_active=TRUE AND pe.mode=%s AND pe.player_id!=%s
-                AND pe.player_id NOT IN (SELECT liked_player_id FROM likes WHERE liker_player_id=%s)
-                ORDER BY pe.created_at DESC LIMIT 1
-            """, (mode, pid, pid))
-        else:
-            c.execute("""
-                SELECT pe.*, p.nick, p.age, p.steam_link, p.faceit_link, p.avatar
-                FROM profiles_extra pe
-                JOIN profiles p ON pe.player_id = p.player_id
-                WHERE pe.is_active=TRUE AND pe.player_id!=%s
-                AND pe.player_id NOT IN (SELECT liked_player_id FROM likes WHERE liker_player_id=%s)
-                ORDER BY pe.created_at DESC LIMIT 1
-            """, (pid, pid))
-        r = c.fetchone()
-    
-    if not r:
-        return jsonify({"status": "empty", "message": "Анкеты закончились"})
-    
-    return jsonify({"status": "ok", "anketa": dict(r)})
-
 # ---------- ЛАЙКИ ----------
 @app.route('/api/like', methods=['POST'])
 @rate_limit(30, 60)
@@ -591,7 +519,6 @@ def like_player():
             c.execute("SELECT nick FROM profiles WHERE player_id=%s", (liked,))
             n2 = c.fetchone()
         
-        # Добавляем в друзья
         with get_db_cursor() as c:
             c.execute("SELECT 1 FROM friends WHERE (player1_id=%s AND player2_id=%s) OR (player1_id=%s AND player2_id=%s)", (pid, liked, liked, pid))
             if not c.fetchone():
@@ -605,7 +532,6 @@ def like_player():
         
         return jsonify({"status": "match", "message": "Взаимный лайк!"})
     
-    # Уведомление тому кого лайкнули
     with get_db_cursor() as c:
         c.execute("SELECT telegram_id, username FROM users WHERE player_id=%s", (liked,))
         u = c.fetchone()
