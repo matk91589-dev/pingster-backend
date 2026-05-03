@@ -278,7 +278,14 @@ def get_profile():
     if not pid: raise NotFoundError("User not found")
     p = get_profile_cached(pid)
     if not p: raise NotFoundError("Profile not found")
-    return jsonify({"status": "ok", "nick": p['nick'], "age": p['age'], "steam_link": p['steam_link'], "faceit_link": p['faceit_link']})
+    return jsonify({
+        "status": "ok", 
+        "nick": p['nick'], 
+        "age": p['age'], 
+        "steam_link": p['steam_link'], 
+        "faceit_link": p['faceit_link'],
+        "avatar": p.get('avatar')  # 🔥 ДОБАВИТЬ ВОТ ЭТУ СТРОКУ
+    })
 
 @app.route('/api/profile/update', methods=['POST'])
 def update_profile():
