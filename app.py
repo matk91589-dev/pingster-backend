@@ -372,6 +372,8 @@ def list_anketas():
 @rate_limit(10, 60)
 def create_anketa():
     data = request.json
+    logger.info(f"📝 create_anketa получил: {data}")
+    
     if not data or 'telegram_id' not in data or 'mode' not in data:
         raise ValidationError("Missing telegram_id or mode")
     
@@ -388,24 +390,24 @@ def create_anketa():
     link = data.get('link', '')
     about = data.get('about', '')
     
-    logger.info(f"📝 Создание анкеты: pid={pid}, mode={mode}, rank={rank}, age={age}")
+    logger.info(f"📝 pid={pid}, mode={mode}, rank='{rank}', age={age}, link='{link}'")
     
     try:
-        # Обновляем профиль
-        if age:
-            with get_db_cursor() as c:
-                c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(age), pid))
-        
-        # Сохраняем ссылку в профиль
-        if link:
-            link_type = 'faceit_link' if mode == 'faceit' else 'steam_link'
-            with get_db_cursor() as c:
-                c.execute(f"UPDATE profiles SET {link_type}=%s WHERE player_id=%s", (link, pid))
-        
-        cache.delete(f"prof:{pid}")
-        
-        # Сохраняем в profiles_extra
+        # 🔥 ВСЁ В ОДНОМ КУРСОРЕ
         with get_db_cursor() as c:
+            # Обновляем возраст в профиле (если передан)
+            if age is not None and age != '':
+                try:
+                    c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(age), pid))
+                except (ValueError, TypeError):
+                    logger.warning(f"⚠ Некорректный возраст: {age}")
+            
+            # Сохраняем ссылку в профиль
+            if link:
+                link_type = 'faceit_link' if mode in ('faceit', 'premier') else 'steam_link'
+                c.execute(f"UPDATE profiles SET {link_type}=%s WHERE player_id=%s", (link, pid))
+            
+            # Сохраняем анкету в profiles_extra
             c.execute("""
                 SELECT id FROM profiles_extra 
                 WHERE player_id=%s AND mode=%s AND is_active=TRUE
@@ -418,23 +420,26 @@ def create_anketa():
                     SET rank=%s, age=%s, link=%s, about=%s, updated_at=NOW()
                     WHERE id=%s 
                     RETURNING id
-                """, (rank, age, link, about, existing[0]))
+                """, (rank, int(age) if age else None, link, about, existing[0]))
             else:
                 c.execute("""
                     INSERT INTO profiles_extra (player_id, mode, rank, age, link, about) 
                     VALUES (%s, %s, %s, %s, %s, %s) 
                     RETURNING id
-                """, (pid, mode, rank, age, link, about))
+                """, (pid, mode, rank, int(age) if age else None, link, about))
             
             anketa_id = c.fetchone()[0]
+        
+        cache.delete(f"prof:{pid}")
         
         logger.info(f"✅ Анкета создана: id={anketa_id}")
         return jsonify({"status": "ok", "anketa_id": anketa_id})
     
     except Exception as e:
         logger.error(f"❌ Ошибка создания анкеты: {e}")
+        import traceback
+        traceback.print_exc()
         raise AppError(f"Failed to create anketa: {str(e)}", 500)
-
 @app.route('/api/anketa/delete', methods=['POST'])
 def delete_anketa():
     data = request.json
