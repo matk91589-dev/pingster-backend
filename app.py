@@ -388,45 +388,52 @@ def create_anketa():
     link = data.get('link', '')
     about = data.get('about', '')
     
-    # Обновляем профиль
-    if age:
-        with get_db_cursor() as c:
-            c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(age), pid))
+    logger.info(f"📝 Создание анкеты: pid={pid}, mode={mode}, rank={rank}, age={age}")
     
-    # Сохраняем ссылку в профиль
-    if link:
-        link_type = 'faceit_link' if mode == 'faceit' else 'steam_link'
-        with get_db_cursor() as c:
-            c.execute(f"UPDATE profiles SET {link_type}=%s WHERE player_id=%s", (link, pid))
-    
-    cache.delete(f"prof:{pid}")
-    
-    # Сохраняем в profiles_extra
-    with get_db_cursor() as c:
-        c.execute("""
-            SELECT id FROM profiles_extra 
-            WHERE player_id=%s AND mode=%s AND is_active=TRUE
-        """, (pid, mode))
-        existing = c.fetchone()
+    try:
+        # Обновляем профиль
+        if age:
+            with get_db_cursor() as c:
+                c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(age), pid))
         
-        if existing:
-            c.execute("""
-                UPDATE profiles_extra 
-                SET rank=%s, age=%s, link=%s, about=%s, updated_at=NOW()
-                WHERE id=%s 
-                RETURNING id
-            """, (rank, age, link, about, existing[0]))
-        else:
-            c.execute("""
-                INSERT INTO profiles_extra (player_id, mode, rank, age, link, about) 
-                VALUES (%s, %s, %s, %s, %s, %s) 
-                RETURNING id
-            """, (pid, mode, rank, age, link, about))
+        # Сохраняем ссылку в профиль
+        if link:
+            link_type = 'faceit_link' if mode == 'faceit' else 'steam_link'
+            with get_db_cursor() as c:
+                c.execute(f"UPDATE profiles SET {link_type}=%s WHERE player_id=%s", (link, pid))
         
-        anketa_id = c.fetchone()[0]
+        cache.delete(f"prof:{pid}")
+        
+        # Сохраняем в profiles_extra
+        with get_db_cursor() as c:
+            c.execute("""
+                SELECT id FROM profiles_extra 
+                WHERE player_id=%s AND mode=%s AND is_active=TRUE
+            """, (pid, mode))
+            existing = c.fetchone()
+            
+            if existing:
+                c.execute("""
+                    UPDATE profiles_extra 
+                    SET rank=%s, age=%s, link=%s, about=%s, updated_at=NOW()
+                    WHERE id=%s 
+                    RETURNING id
+                """, (rank, age, link, about, existing[0]))
+            else:
+                c.execute("""
+                    INSERT INTO profiles_extra (player_id, mode, rank, age, link, about) 
+                    VALUES (%s, %s, %s, %s, %s, %s) 
+                    RETURNING id
+                """, (pid, mode, rank, age, link, about))
+            
+            anketa_id = c.fetchone()[0]
+        
+        logger.info(f"✅ Анкета создана: id={anketa_id}")
+        return jsonify({"status": "ok", "anketa_id": anketa_id})
     
-    return jsonify({"status": "ok", "anketa_id": anketa_id})
-
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания анкеты: {e}")
+        raise AppError(f"Failed to create anketa: {str(e)}", 500)
 
 @app.route('/api/anketa/delete', methods=['POST'])
 def delete_anketa():
