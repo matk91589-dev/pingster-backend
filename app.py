@@ -218,7 +218,7 @@ def generate_random_nick() -> str:
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "version": "2.0.0"})
+    return jsonify({"status": "ok", "version": "2.1.0"})
 
 # ---------- ПОЛЬЗОВАТЕЛЬ ----------
 @app.route('/api/user/init', methods=['POST'])
@@ -280,11 +280,11 @@ def get_profile():
     if not p: raise NotFoundError("Profile not found")
     return jsonify({
         "status": "ok", 
-        "nick": p['nick'], 
-        "age": p['age'], 
-        "steam_link": p['steam_link'], 
-        "faceit_link": p['faceit_link'],
-        "avatar": p.get('avatar')  # 🔥 ДОБАВИТЬ ВОТ ЭТУ СТРОКУ
+        "nick": p.get('nick'), 
+        "age": p.get('age'), 
+        "steam_link": p.get('steam_link'), 
+        "faceit_link": p.get('faceit_link'),
+        "avatar": p.get('avatar')
     })
 
 @app.route('/api/profile/update', methods=['POST'])
@@ -393,9 +393,8 @@ def create_anketa():
     logger.info(f"📝 pid={pid}, mode={mode}, rank='{rank}', age={age}, link='{link}'")
     
     try:
-        # 🔥 ВСЁ В ОДНОМ КУРСОРЕ
         with get_db_cursor() as c:
-            # Обновляем возраст в профиле (если передан)
+            # Обновляем возраст в профиле
             if age is not None and age != '':
                 try:
                     c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(age), pid))
@@ -407,12 +406,14 @@ def create_anketa():
                 link_type = 'faceit_link' if mode in ('faceit', 'premier') else 'steam_link'
                 c.execute(f"UPDATE profiles SET {link_type}=%s WHERE player_id=%s", (link, pid))
             
-            # Сохраняем анкету в profiles_extra
+            # Сохраняем анкету
             c.execute("""
                 SELECT id FROM profiles_extra 
                 WHERE player_id=%s AND mode=%s AND is_active=TRUE
             """, (pid, mode))
             existing = c.fetchone()
+            
+            age_int = int(age) if age is not None and age != '' else None
             
             if existing:
                 c.execute("""
@@ -420,13 +421,13 @@ def create_anketa():
                     SET rank=%s, age=%s, link=%s, about=%s, updated_at=NOW()
                     WHERE id=%s 
                     RETURNING id
-                """, (rank, int(age) if age else None, link, about, existing[0]))
+                """, (rank, age_int, link, about, existing[0]))
             else:
                 c.execute("""
                     INSERT INTO profiles_extra (player_id, mode, rank, age, link, about) 
                     VALUES (%s, %s, %s, %s, %s, %s) 
                     RETURNING id
-                """, (pid, mode, rank, int(age) if age else None, link, about))
+                """, (pid, mode, rank, age_int, link, about))
             
             anketa_id = c.fetchone()[0]
         
@@ -440,6 +441,8 @@ def create_anketa():
         import traceback
         traceback.print_exc()
         raise AppError(f"Failed to create anketa: {str(e)}", 500)
+
+
 @app.route('/api/anketa/delete', methods=['POST'])
 def delete_anketa():
     data = request.json
@@ -629,5 +632,5 @@ application = app
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🔥 PINGSTER v2.0 на порту {port}")
+    print(f"🔥 PINGSTER v2.1 на порту {port}")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
