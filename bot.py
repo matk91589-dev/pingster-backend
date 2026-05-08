@@ -52,15 +52,11 @@ def delete_old_command(user_id, msg_type):
     if user_id in user_messages and msg_type in user_messages[user_id]:
         old = user_messages[user_id][msg_type]
         if 'user' in old:
-            try:
-                bot.delete_message(user_id, old['user'])
-            except:
-                pass
+            try: bot.delete_message(user_id, old['user'])
+            except: pass
         if 'bot' in old:
-            try:
-                bot.delete_message(user_id, old['bot'])
-            except:
-                pass
+            try: bot.delete_message(user_id, old['bot'])
+            except: pass
 
 def save_command_message(user_id, msg_type, user_msg_id, bot_msg_id):
     if user_id not in user_messages:
@@ -69,33 +65,22 @@ def save_command_message(user_id, msg_type, user_msg_id, bot_msg_id):
 
 def register_user(telegram_id, username):
     """Регистрирует пользователя в API и возвращает player_id"""
-    print(f"📝 Регистрация пользователя: tg_id={telegram_id}, username={username}")
+    print(f"📝 Регистрация: tg_id={telegram_id}, username={username}")
     try:
-        payload = {
-            'telegram_id': telegram_id,
-            'username': username
-        }
-        print(f"📤 POST {API_URL}/user/init | payload: {payload}")
-        
         response = requests.post(
             f'{API_URL}/user/init',
-            json=payload,
+            json={'telegram_id': telegram_id, 'username': username},
             timeout=10
         )
-        
-        print(f"📥 Ответ API: status={response.status_code}, body={response.text[:200]}")
-        
+        print(f"📥 Ответ: status={response.status_code}, body={response.text[:200]}")
         if response.status_code == 200:
             data = response.json()
             player_id = data.get('player_id')
-            print(f"✅ player_id получен: {player_id}")
+            print(f"✅ player_id={player_id}, is_new={data.get('is_new')}")
             return player_id
-        else:
-            print(f"❌ API вернул ошибку: {response.status_code}")
-            return None
+        return None
     except Exception as e:
         print(f"❌ Ошибка регистрации: {e}")
-        traceback.print_exc()
         return None
 
 # ============================================
@@ -110,34 +95,27 @@ def start(message):
     
     print(f"\n{'='*50}")
     print(f"🚀 /start от @{username} (id: {telegram_id})")
-    print(f"{'='*50}")
     
-    # Удаляем старые сообщения
     delete_old_command(telegram_id, 'start')
     
-    # Проверяем сервер
-    if not check_server_awake():
+    # 🔥 ВСЕГДА РЕГИСТРИРУЕМ — даже если сервер спит, пробуем
+    player_id = None
+    if check_server_awake():
+        player_id = register_user(telegram_id, username)
+    else:
         wake_up_server()
-        bot_msg = bot.send_message(
-            telegram_id,
-            "♻️ **загрузка сервера**\n\n"
-            "Пожалуйста, подождите 5 секунд и нажмите /start снова.",
-            parse_mode='Markdown'
-        )
-        save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
-        print("⏳ Сервер спит, ждём")
-        return
+        # Пробуем зарегистрировать после пробуждения
+        time.sleep(1)
+        if check_server_awake():
+            player_id = register_user(telegram_id, username)
     
-    # 🔥 РЕГИСТРИРУЕМ ВСЕХ (и тестеров и обычных)
-    player_id = register_user(telegram_id, username)
     print(f"🎮 Игровой ID: {player_id}")
     
-    # Проверяем доступ
     is_allowed = telegram_id in ALLOWED_USERS
-    print(f"🔐 Доступ: {'РАЗРЕШЁН' if is_allowed else 'ЗАКРЫТ (тестер)'}")
+    print(f"🔐 Доступ: {'РАЗРЕШЁН' if is_allowed else 'ОБЫЧНЫЙ'}")
     
     if not is_allowed:
-        # Обычный пользователь — только канал
+        # 🔥 ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ — показывает ID!
         text = (
             f"***@{username}***\n"
             f"Добро пожаловать в Pingster!\n\n"
@@ -145,24 +123,17 @@ def start(message):
             f"🚧 Приложение пока в разработке.\n"
             f"👇 Перейти в канал"
         )
-        
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(
             text="📢 Telegram канал",
             url="https://t.me/pingster_team_channel"
         ))
-        
-        bot_msg = bot.send_message(
-            telegram_id, 
-            text, 
-            parse_mode='Markdown', 
-            reply_markup=markup
-        )
+        bot_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
         save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
-        print("✅ Сообщение для обычного юзера отправлено")
+        print(f"✅ Обычный юзер, player_id={player_id}")
         return
     
-    # Тестер — полный доступ
+    # 🔥 ТЕСТЕР
     text = (
         f"***@{username}***\n"
         f"Добро пожаловать в Pingster!\n\n"
@@ -177,14 +148,9 @@ def start(message):
         web_app=WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={telegram_id}')
     ))
     
-    bot_msg = bot.send_message(
-        telegram_id, 
-        text, 
-        parse_mode='Markdown', 
-        reply_markup=markup
-    )
+    bot_msg = bot.send_message(telegram_id, text, parse_mode='Markdown', reply_markup=markup)
     save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
-    print("✅ Сообщение для тестера отправлено")
+    print(f"✅ Тестер, player_id={player_id}")
     print(f"{'='*50}\n")
 
 # ============================================
@@ -197,27 +163,19 @@ def handle_reputation_vote(call):
     chat_id = message.chat.id
     message_id = message.message_id
     callback_data = call.data
-
     vote_type = "👍" if ":up:" in callback_data else "👎"
     print(f"🗳 Голос: {callback_data}")
 
-    # API в фоне
     def send_api():
         try:
-            r = requests.post(
-                f"{API_URL}/reputation/vote",
-                json={"callback_data": callback_data},
-                timeout=5
-            )
+            r = requests.post(f"{API_URL}/reputation/vote", json={"callback_data": callback_data}, timeout=5)
             print(f"📡 API vote: {r.status_code}")
         except Exception as e:
             print(f"❌ API vote error: {e}")
     threading.Thread(target=send_api, daemon=True).start()
 
-    # Ответ на callback
     bot.answer_callback_query(call.id, "✅ Спасибо за оценку!")
 
-    # Ищем ссылку на чат
     chat_link = None
     if message.reply_markup:
         for row in message.reply_markup.keyboard:
@@ -225,64 +183,36 @@ def handle_reputation_vote(call):
                 if hasattr(btn, 'url') and btn.url:
                     chat_link = btn.url
                     break
-            if chat_link:
-                break
+            if chat_link: break
 
-    # Формируем новый текст
     original_text = message.text or message.caption or ""
-    if "Оцените тиммейта:" in original_text:
-        base_text = original_text.split("Оцените тиммейта:")[0].strip()
-    else:
-        base_text = original_text
-
+    base_text = original_text.split("Оцените тиммейта:")[0].strip() if "Оцените тиммейта:" in original_text else original_text
     new_text = f"{base_text}\n\n✅ Вы оценили тиммейта: {vote_type}"
 
-    # Редактируем сообщение
     try:
         if chat_link:
             link_markup = InlineKeyboardMarkup()
             link_markup.add(InlineKeyboardButton("👉 Перейти в чат", url=chat_link))
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=new_text,
-                reply_markup=link_markup
-            )
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text, reply_markup=link_markup)
         else:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=new_text,
-                reply_markup=None
-            )
+            bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text, reply_markup=None)
         print("✅ Сообщение отредактировано")
     except Exception as e:
         print(f"❌ Ошибка редактирования: {e}")
 
 # ============================================
-# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ (ТОЛЬКО ТЕКСТ ЮЗЕРОВ)
+# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
 # ============================================
 
 @bot.message_handler(func=lambda message: True)
 def delete_unknown_messages(message):
-    """Удаляет ВСЕ текстовые сообщения от юзеров, кроме команд"""
-    # Пропускаем команды
-    if message.text and message.text.startswith('/'):
-        return
-    
-    # Пропускаем сообщения от ботов
-    if message.from_user.is_bot:
-        return
-    
-    # Удаляем только текст (не фото/стикеры/войсы)
-    if message.content_type != 'text':
-        return
-    
-    # Удаляем только в личке
+    if message.text and message.text.startswith('/'): return
+    if message.from_user.is_bot: return
+    if message.content_type != 'text': return
     if message.chat.type == 'private':
         try:
             bot.delete_message(message.chat.id, message.message_id)
-            print(f"🗑 Удалено сообщение от {message.from_user.id}: {message.text[:50] if message.text else '—'}")
+            print(f"🗑 Удалено сообщение от {message.from_user.id}")
         except Exception as e:
             print(f"⚠️ Ошибка удаления: {e}")
 
@@ -293,7 +223,7 @@ if __name__ == '__main__':
     print("🤖 Pingster бот запущен!")
     print(f"📡 API: {API_URL}")
     print(f"👥 Тестеры: {ALLOWED_USERS}")
-    print(f"📊 Все пользователи регистрируются в БД")
+    print(f"📊 ВСЕ пользователи регистрируются в БД")
     print()
     
     bot.remove_webhook()
