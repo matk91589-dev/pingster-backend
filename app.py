@@ -75,6 +75,10 @@ class NotFoundError(AppError):
     def __init__(self, message: str):
         super().__init__(message, 404, "NOT_FOUND")
 
+class ServiceUnavailableError(AppError):
+    def __init__(self, message: str = "Service temporarily unavailable"):
+        super().__init__(message, 503, "SERVICE_UNAVAILABLE")
+
 # ============================================
 # RATE LIMITING
 # ============================================
@@ -115,7 +119,11 @@ db_pool = None
 def init_db_pool():
     global db_pool
     try:
-        db_pool = pool.SimpleConnectionPool(2, 15, host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT, connect_timeout=30, keepalives=1, keepalives_idle=5, keepalives_interval=2, keepalives_count=2)
+        db_pool = pool.SimpleConnectionPool(
+            2, 15, host=DB_HOST, database=DB_NAME, user=DB_USER,
+            password=DB_PASSWORD, port=DB_PORT, connect_timeout=30,
+            keepalives=1, keepalives_idle=5, keepalives_interval=2, keepalives_count=2
+        )
         logger.info("✅ Пул соединений создан")
         test_conn = db_pool.getconn()
         db_pool.putconn(test_conn)
@@ -125,14 +133,16 @@ def init_db_pool():
         return False
 
 def get_db_connection():
-    if not db_pool: raise AppError("Database pool not initialized", 500)
+    if not db_pool:
+        raise ServiceUnavailableError("Database pool not initialized")
     try:
         conn = db_pool.getconn()
-        with conn.cursor() as cur: cur.execute("SELECT 1")
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
         return conn
     except Exception as e:
         logger.error(f"Ошибка получения соединения: {e}")
-        raise
+        raise ServiceUnavailableError("Database connection failed")
 
 @contextmanager
 def get_db_cursor():
@@ -143,13 +153,16 @@ def get_db_cursor():
         yield cursor
         conn.commit()
     except Exception as e:
-        if conn: conn.rollback()
+        if conn:
+            conn.rollback()
         logger.error(f"Database error: {e}")
         raise
     finally:
         if conn:
-            try: db_pool.putconn(conn)
-            except: pass
+            try:
+                db_pool.putconn(conn)
+            except:
+                pass
 
 # ============================================
 # КЭШ
@@ -160,7 +173,8 @@ class SimpleCache:
     def get(self, key):
         if key in self.cache:
             val, ts = self.cache[key]
-            if time.time() - ts < 300: return val
+            if time.time() - ts < 300:
+                return val
             del self.cache[key]
         return None
     def set(self, key, value):
@@ -176,12 +190,17 @@ cache = SimpleCache()
 def update_user_activity(telegram_id: str):
     try:
         with get_db_cursor() as c:
-            c.execute("UPDATE users SET last_active=NOW() AT TIME ZONE 'UTC', is_online=TRUE WHERE telegram_id=%s", (telegram_id,))
-    except: pass
+            c.execute(
+                "UPDATE users SET last_active=NOW() AT TIME ZONE 'UTC', is_online=TRUE WHERE telegram_id=%s",
+                (telegram_id,)
+            )
+    except:
+        pass
 
 def get_player_id(telegram_id: str) -> Optional[str]:
     cached = cache.get(f"pid:{telegram_id}")
-    if cached: return cached
+    if cached:
+        return cached
     try:
         with get_db_cursor() as c:
             c.execute("SELECT player_id FROM users WHERE telegram_id=%s", (telegram_id,))
@@ -189,28 +208,70 @@ def get_player_id(telegram_id: str) -> Optional[str]:
             if r:
                 cache.set(f"pid:{telegram_id}", r[0])
                 return r[0]
-    except: pass
+    except:
+        pass
     return None
 
 def get_profile_cached(player_id: str) -> Optional[Dict]:
     cached = cache.get(f"prof:{player_id}")
-    if cached: return cached
+    if cached:
+        return cached
     try:
         with get_db_cursor() as c:
-            c.execute("SELECT nick, age, steam_link, faceit_link, avatar FROM profiles WHERE player_id=%s", (player_id,))
+            c.execute(
+                "SELECT nick, age, steam_link, faceit_link, avatar FROM profiles WHERE player_id=%s",
+                (player_id,)
+            )
             r = c.fetchone()
             if r:
                 p = dict(r)
                 cache.set(f"prof:{player_id}", p)
                 return p
-    except: pass
+    except:
+        pass
     return None
 
 def generate_player_id() -> str:
     return str(random.randint(10000000, 99999999))
 
 def generate_random_nick() -> str:
-    return ''.join(random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789') for _ in range(8))
+    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+    return ''.join(random.choice(chars) for _ in range(8))
+
+# ============================================
+# 🔥 ГАРАНТИРОВАННАЯ РЕГИСТРАЦИЯ
+# ============================================
+def ensure_user_exists(telegram_id: str, username: str = '') -> Tuple[str, str]:
+    """
+    Всегда возвращает (player_id, nick).
+    Если пользователя нет — создаёт.
+    Если БД недоступна — кидает ServiceUnavailableError.
+    """
+    with get_db_cursor() as c:
+        c.execute("SELECT player_id FROM users WHERE telegram_id=%s", (telegram_id,))
+        r = c.fetchone()
+        if r:
+            update_user_activity(telegram_id)
+            cache.set(f"pid:{telegram_id}", r[0])
+            # Получаем nick
+            c.execute("SELECT nick FROM profiles WHERE player_id=%s", (r[0],))
+            p = c.fetchone()
+            return r[0], (p[0] if p else generate_random_nick())
+        
+        # Создаём нового
+        pid = generate_player_id()
+        nick = username if username and len(username) <= 32 else generate_random_nick()
+        c.execute(
+            "INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online, leadercoins) "
+            "VALUES (%s,%s,NOW(),NOW(),TRUE,1000)",
+            (telegram_id, pid)
+        )
+        c.execute(
+            "INSERT INTO profiles (player_id, telegram_id, nick, created_at) VALUES (%s,%s,%s,NOW())",
+            (pid, telegram_id, nick)
+        )
+        cache.set(f"pid:{telegram_id}", pid)
+        return pid, nick
 
 # ============================================
 # ЭНДПОИНТЫ
@@ -218,51 +279,57 @@ def generate_random_nick() -> str:
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "version": "2.1.0"})
+    return jsonify({"status": "ok", "version": "2.0.0"})
 
 # ---------- ПОЛЬЗОВАТЕЛЬ ----------
 @app.route('/api/user/init', methods=['POST'])
-@rate_limit(10, 60)
+@rate_limit(20, 60)
 def user_init():
+    """
+    ВСЕГДА возвращает player_id.
+    Никогда не возвращает ошибку если telegram_id передан.
+    """
+    data = request.json
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
+    
+    tid = data['telegram_id']
+    username = data.get('username', '')
+    
+    try:
+        pid, nick = ensure_user_exists(tid, username)
+        return jsonify({
+            "status": "ok",
+            "player_id": pid,
+            "nick": nick,
+            "is_new": False
+        })
+    except ServiceUnavailableError as e:
+        # 🔥 Если БД недоступна — 503, фронт покажет "проверьте интернет"
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка user_init: {e}")
+        raise ServiceUnavailableError("Unable to initialize user")
+
+@app.route('/api/user/update-username', methods=['POST'])
+def update_username():
     data = request.json
     if not data or 'telegram_id' not in data:
         raise ValidationError("Missing telegram_id")
     tid = data['telegram_id']
     username = data.get('username', '')
-    
-    with get_db_cursor() as c:
-        c.execute("SELECT player_id FROM users WHERE telegram_id=%s", (tid,))
-        r = c.fetchone()
-        if r:
-            update_user_activity(tid)
-            cache.set(f"pid:{tid}", r[0])
-            return jsonify({"status": "ok", "player_id": r[0], "is_new": False})
-    
-    pid = generate_player_id()
-    nick = username if username and len(username) <= 32 else generate_random_nick()
-    
-    with get_db_cursor() as c:
-        c.execute("INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online, leadercoins) VALUES (%s,%s,NOW(),NOW(),TRUE,1000)", (tid, pid))
-        c.execute("INSERT INTO profiles (player_id, telegram_id, nick, created_at) VALUES (%s,%s,%s,NOW())", (pid, tid, nick))
-    cache.set(f"pid:{tid}", pid)
-    return jsonify({"status": "ok", "player_id": pid, "is_new": True, "nick": nick})
-
-@app.route('/api/user/update-username', methods=['POST'])
-def update_username():
-    data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
-    tid = data['telegram_id']
-    username = data.get('username', '')
     with get_db_cursor() as c:
         c.execute("UPDATE users SET username=%s WHERE telegram_id=%s RETURNING username", (username, tid))
         r = c.fetchone()
-        if r: return jsonify({"status": "ok", "username": r[0]})
+        if r:
+            return jsonify({"status": "ok", "username": r[0]})
         raise NotFoundError("User not found")
 
 @app.route('/api/user/rating', methods=['POST'])
 def get_user_rating():
     data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
     with get_db_cursor() as c:
         c.execute("SELECT COALESCE(rating,0) as rating FROM users WHERE telegram_id=%s", (data['telegram_id'],))
         r = c.fetchone()
@@ -272,27 +339,36 @@ def get_user_rating():
 @app.route('/api/profile/get', methods=['POST'])
 def get_profile():
     data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
-    update_user_activity(data['telegram_id'])
-    pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
+    
+    tid = data['telegram_id']
+    username = data.get('username', '')
+    
+    # 🔥 ГАРАНТИРУЕМ ЧТО ПОЛЬЗОВАТЕЛЬ ЕСТЬ
+    pid, nick = ensure_user_exists(tid, username)
+    update_user_activity(tid)
+    
     p = get_profile_cached(pid)
-    if not p: raise NotFoundError("Profile not found")
+    
     return jsonify({
-        "status": "ok", 
-        "nick": p.get('nick'), 
-        "age": p.get('age'), 
-        "steam_link": p.get('steam_link'), 
-        "faceit_link": p.get('faceit_link'),
-        "avatar": p.get('avatar')
+        "status": "ok",
+        "player_id": pid,
+        "nick": nick,
+        "age": p.get('age') if p else None,
+        "steam_link": p.get('steam_link') if p else None,
+        "faceit_link": p.get('faceit_link') if p else None,
+        "avatar": p.get('avatar') if p else None
     })
 
 @app.route('/api/profile/update', methods=['POST'])
 def update_profile():
     data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
     pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
+    if not pid:
+        raise NotFoundError("User not found")
     
     fields = []
     vals = []
@@ -300,11 +376,15 @@ def update_profile():
         if k in data and data[k] is not None:
             fields.append(f"{col}=%s")
             vals.append(data[k])
-    if not fields: raise ValidationError("No fields")
+    if not fields:
+        raise ValidationError("No fields")
     vals.append(pid)
     
     with get_db_cursor() as c:
-        c.execute(f"UPDATE profiles SET {', '.join(fields)} WHERE player_id=%s RETURNING nick, age, steam_link, faceit_link", vals)
+        c.execute(
+            f"UPDATE profiles SET {', '.join(fields)} WHERE player_id=%s RETURNING nick, age, steam_link, faceit_link",
+            vals
+        )
         u = c.fetchone()
     cache.delete(f"prof:{pid}")
     return jsonify({"status": "ok", "nick": u[0], "age": u[1], "steam_link": u[2], "faceit_link": u[3]})
@@ -313,9 +393,11 @@ def update_profile():
 @app.route('/api/profile/avatar', methods=['POST'])
 def get_avatar():
     data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
     pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
+    if not pid:
+        raise NotFoundError("User not found")
     with get_db_cursor() as c:
         c.execute("SELECT avatar FROM profiles WHERE player_id=%s", (pid,))
         r = c.fetchone()
@@ -324,11 +406,14 @@ def get_avatar():
 @app.route('/api/profile/avatar/update', methods=['POST'])
 def update_avatar():
     data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
     avatar_data = data.get('avatar_url') or data.get('avatar')
-    if not avatar_data: raise ValidationError("Missing avatar data")
+    if not avatar_data:
+        raise ValidationError("Missing avatar data")
     pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
+    if not pid:
+        raise NotFoundError("User not found")
     with get_db_cursor() as c:
         c.execute("UPDATE profiles SET avatar=%s WHERE player_id=%s RETURNING avatar", (avatar_data, pid))
         u = c.fetchone()
@@ -342,9 +427,9 @@ def list_anketas():
     if not data or 'telegram_id' not in data:
         raise ValidationError("Missing telegram_id")
     
-    pid = get_player_id(data['telegram_id'])
-    if not pid:
-        raise NotFoundError("User not found")
+    tid = data['telegram_id']
+    username = data.get('username', '')
+    pid, _ = ensure_user_exists(tid, username)
     
     with get_db_cursor() as c:
         c.execute("""
@@ -367,7 +452,6 @@ def list_anketas():
     
     return jsonify({"status": "ok", "anketas": anketas})
 
-
 @app.route('/api/anketa/create', methods=['POST'])
 @rate_limit(10, 60)
 def create_anketa():
@@ -377,9 +461,9 @@ def create_anketa():
     if not data or 'telegram_id' not in data or 'mode' not in data:
         raise ValidationError("Missing telegram_id or mode")
     
-    pid = get_player_id(data['telegram_id'])
-    if not pid:
-        raise NotFoundError("User not found")
+    tid = data['telegram_id']
+    username = data.get('username', '')
+    pid, _ = ensure_user_exists(tid, username)
     
     mode = data['mode'].lower()
     if mode not in ('faceit', 'premier', 'prime', 'public'):
@@ -394,19 +478,16 @@ def create_anketa():
     
     try:
         with get_db_cursor() as c:
-            # Обновляем возраст в профиле
             if age is not None and age != '':
                 try:
                     c.execute("UPDATE profiles SET age=%s WHERE player_id=%s", (int(age), pid))
                 except (ValueError, TypeError):
                     logger.warning(f"⚠ Некорректный возраст: {age}")
             
-            # Сохраняем ссылку в профиль
             if link:
                 link_type = 'faceit_link' if mode in ('faceit', 'premier') else 'steam_link'
                 c.execute(f"UPDATE profiles SET {link_type}=%s WHERE player_id=%s", (link, pid))
             
-            # Сохраняем анкету
             c.execute("""
                 SELECT id FROM profiles_extra 
                 WHERE player_id=%s AND mode=%s AND is_active=TRUE
@@ -419,20 +500,17 @@ def create_anketa():
                 c.execute("""
                     UPDATE profiles_extra 
                     SET rank=%s, age=%s, link=%s, about=%s, updated_at=NOW()
-                    WHERE id=%s 
-                    RETURNING id
+                    WHERE id=%s RETURNING id
                 """, (rank, age_int, link, about, existing[0]))
             else:
                 c.execute("""
                     INSERT INTO profiles_extra (player_id, mode, rank, age, link, about) 
-                    VALUES (%s, %s, %s, %s, %s, %s) 
-                    RETURNING id
+                    VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
                 """, (pid, mode, rank, age_int, link, about))
             
             anketa_id = c.fetchone()[0]
         
         cache.delete(f"prof:{pid}")
-        
         logger.info(f"✅ Анкета создана: id={anketa_id}")
         return jsonify({"status": "ok", "anketa_id": anketa_id})
     
@@ -441,7 +519,6 @@ def create_anketa():
         import traceback
         traceback.print_exc()
         raise AppError(f"Failed to create anketa: {str(e)}", 500)
-
 
 @app.route('/api/anketa/delete', methods=['POST'])
 def delete_anketa():
@@ -464,7 +541,6 @@ def delete_anketa():
     
     return jsonify({"status": "ok"})
 
-
 @app.route('/api/anketa/next', methods=['POST'])
 def get_next_anketa():
     data = request.json
@@ -472,9 +548,9 @@ def get_next_anketa():
         raise ValidationError("Missing telegram_id")
     
     mode = data.get('mode', '').lower()
-    pid = get_player_id(data['telegram_id'])
-    if not pid:
-        raise NotFoundError("User not found")
+    tid = data['telegram_id']
+    username = data.get('username', '')
+    pid, _ = ensure_user_exists(tid, username)
     
     with get_db_cursor() as c:
         if mode and mode != 'all':
@@ -516,9 +592,11 @@ def get_next_anketa():
 @rate_limit(30, 60)
 def like_player():
     data = request.json
-    if not data or 'telegram_id' not in data or 'liked_player_id' not in data: raise ValidationError("Missing fields")
+    if not data or 'telegram_id' not in data or 'liked_player_id' not in data:
+        raise ValidationError("Missing fields")
     pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
+    if not pid:
+        raise NotFoundError("User not found")
     liked = data['liked_player_id']
     
     with get_db_cursor() as c:
@@ -542,15 +620,27 @@ def like_player():
             n2 = c.fetchone()
         
         with get_db_cursor() as c:
-            c.execute("SELECT 1 FROM friends WHERE (player1_id=%s AND player2_id=%s) OR (player1_id=%s AND player2_id=%s)", (pid, liked, liked, pid))
+            c.execute(
+                "SELECT 1 FROM friends WHERE (player1_id=%s AND player2_id=%s) OR (player1_id=%s AND player2_id=%s)",
+                (pid, liked, liked, pid)
+            )
             if not c.fetchone():
                 c.execute("INSERT INTO friends (player1_id, player2_id, created_at) VALUES (%s,%s,NOW())", (pid, liked))
         
         for uid, partner_nick, partner_uname in [(u1[0], n2[0], u2[1]), (u2[0], n1[0], u1[1])]:
             try:
-                msg = f"❤️ Взаимный мэтч!\n\nТы и {partner_nick} лайкнули друг друга!\n\nНапиши ему: @{partner_uname}" if partner_uname else f"❤️ Взаимный мэтч!\n\nТы и {partner_nick} лайкнули друг друга!"
-                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": uid, "text": msg}, timeout=3)
-            except: pass
+                msg = (
+                    f"❤️ Взаимный мэтч!\n\nТы и {partner_nick} лайкнули друг друга!\n\n"
+                    f"Напиши ему: @{partner_uname}"
+                    if partner_uname else
+                    f"❤️ Взаимный мэтч!\n\nТы и {partner_nick} лайкнули друг друга!"
+                )
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={"chat_id": uid, "text": msg}, timeout=3
+                )
+            except:
+                pass
         
         return jsonify({"status": "match", "message": "Взаимный лайк!"})
     
@@ -560,26 +650,57 @@ def like_player():
         c.execute("SELECT nick FROM profiles WHERE player_id=%s", (pid,))
         n = c.fetchone()
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": u[0], "text": f"👍 {n[0]} лайкнул твою анкету!\n\nЗапусти бота чтобы посмотреть: @pingster_team_bot"}, timeout=3)
-    except: pass
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": u[0],
+                "text": f"👍 {n[0]} лайкнул твою анкету!\n\nЗапусти бота чтобы посмотреть: @pingster_team_bot"
+            },
+            timeout=3
+        )
+    except:
+        pass
     
     return jsonify({"status": "liked"})
 
 @app.route('/api/likes/list', methods=['POST'])
 def likes_list():
     data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
     pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
+    if not pid:
+        raise NotFoundError("User not found")
     
     with get_db_cursor() as c:
-        c.execute("SELECT l.liked_player_id, p.nick, p.avatar, pe.mode, pe.rank FROM likes l JOIN profiles p ON l.liked_player_id=p.player_id LEFT JOIN profiles_extra pe ON p.player_id=pe.player_id AND pe.is_active=TRUE WHERE l.liker_player_id=%s AND l.liked_player_id IN (SELECT liker_player_id FROM likes WHERE liked_player_id=%s)", (pid, pid))
+        c.execute("""
+            SELECT l.liked_player_id, p.nick, p.avatar, pe.mode, pe.rank 
+            FROM likes l JOIN profiles p ON l.liked_player_id=p.player_id 
+            LEFT JOIN profiles_extra pe ON p.player_id=pe.player_id AND pe.is_active=TRUE 
+            WHERE l.liker_player_id=%s AND l.liked_player_id IN (
+                SELECT liker_player_id FROM likes WHERE liked_player_id=%s
+            )
+        """, (pid, pid))
         mutual = [dict(r) for r in c.fetchall()]
         
-        c.execute("SELECT l.liker_player_id, p.nick, p.avatar, pe.mode, pe.rank FROM likes l JOIN profiles p ON l.liker_player_id=p.player_id LEFT JOIN profiles_extra pe ON p.player_id=pe.player_id AND pe.is_active=TRUE WHERE l.liked_player_id=%s AND l.liker_player_id NOT IN (SELECT liked_player_id FROM likes WHERE liker_player_id=%s)", (pid, pid))
+        c.execute("""
+            SELECT l.liker_player_id, p.nick, p.avatar, pe.mode, pe.rank 
+            FROM likes l JOIN profiles p ON l.liker_player_id=p.player_id 
+            LEFT JOIN profiles_extra pe ON p.player_id=pe.player_id AND pe.is_active=TRUE 
+            WHERE l.liked_player_id=%s AND l.liker_player_id NOT IN (
+                SELECT liked_player_id FROM likes WHERE liker_player_id=%s
+            )
+        """, (pid, pid))
         liked_me = [dict(r) for r in c.fetchall()]
         
-        c.execute("SELECT l.liked_player_id, p.nick, p.avatar, pe.mode, pe.rank FROM likes l JOIN profiles p ON l.liked_player_id=p.player_id LEFT JOIN profiles_extra pe ON p.player_id=pe.player_id AND pe.is_active=TRUE WHERE l.liker_player_id=%s AND l.liked_player_id NOT IN (SELECT liker_player_id FROM likes WHERE liked_player_id=%s)", (pid, pid))
+        c.execute("""
+            SELECT l.liked_player_id, p.nick, p.avatar, pe.mode, pe.rank 
+            FROM likes l JOIN profiles p ON l.liked_player_id=p.player_id 
+            LEFT JOIN profiles_extra pe ON p.player_id=pe.player_id AND pe.is_active=TRUE 
+            WHERE l.liker_player_id=%s AND l.liked_player_id NOT IN (
+                SELECT liker_player_id FROM likes WHERE liked_player_id=%s
+            )
+        """, (pid, pid))
         i_liked = [dict(r) for r in c.fetchall()]
     
     return jsonify({"status": "ok", "mutual": mutual, "liked_me": liked_me, "i_liked": i_liked})
@@ -588,21 +709,32 @@ def likes_list():
 @app.route('/api/friends/list', methods=['POST'])
 def friends_list():
     data = request.json
-    if not data or 'telegram_id' not in data: raise ValidationError("Missing telegram_id")
+    if not data or 'telegram_id' not in data:
+        raise ValidationError("Missing telegram_id")
     pid = get_player_id(data['telegram_id'])
-    if not pid: raise NotFoundError("User not found")
+    if not pid:
+        raise NotFoundError("User not found")
     with get_db_cursor() as c:
-        c.execute("SELECT CASE WHEN player1_id=%s THEN player2_id ELSE player1_id END as fid FROM friends WHERE player1_id=%s OR player2_id=%s", (pid, pid, pid))
+        c.execute(
+            "SELECT CASE WHEN player1_id=%s THEN player2_id ELSE player1_id END as fid "
+            "FROM friends WHERE player1_id=%s OR player2_id=%s",
+            (pid, pid, pid)
+        )
         friends = []
         for r in c.fetchall():
             p = get_profile_cached(r[0])
-            if p: friends.append({"player_id": r[0], "nick": p['nick'], "avatar": p.get('avatar')})
+            if p:
+                friends.append({"player_id": r[0], "nick": p['nick'], "avatar": p.get('avatar')})
     return jsonify({"status": "ok", "friends": friends})
 
 @app.route('/api/users/leaderboard', methods=['POST'])
 def leaderboard():
     with get_db_cursor() as c:
-        c.execute("SELECT u.player_id, p.nick, p.avatar, COALESCE(u.leadercoins,0) as coins FROM users u JOIN profiles p ON u.player_id=p.player_id ORDER BY coins DESC LIMIT 20")
+        c.execute("""
+            SELECT u.player_id, p.nick, p.avatar, COALESCE(u.leadercoins,0) as coins 
+            FROM users u JOIN profiles p ON u.player_id=p.player_id 
+            ORDER BY coins DESC LIMIT 20
+        """)
         lb = [dict(r) for r in c.fetchall()]
     return jsonify({"status": "ok", "leaderboard": lb})
 
@@ -612,6 +744,14 @@ def leaderboard():
 @app.errorhandler(AppError)
 def handle_app_error(e):
     return jsonify({"error": str(e), "error_code": e.error_code}), e.status_code
+
+@app.errorhandler(ServiceUnavailableError)
+def handle_service_unavailable(e):
+    return jsonify({
+        "error": str(e),
+        "error_code": e.error_code,
+        "message": "Сервис временно недоступен. Проверьте интернет-соединение или попробуйте позже."
+    }), 503
 
 @app.errorhandler(404)
 def handle_404(e):
@@ -632,5 +772,5 @@ application = app
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🔥 PINGSTER v2.1 на порту {port}")
+    print(f"🔥 PINGSTER v2.0 на порту {port}")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
