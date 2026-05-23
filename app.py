@@ -114,10 +114,9 @@ def rate_limit(limit: int = None, window: int = None):
     return decorator
 
 # ============================================
-# TELEGRAM MINI APP AUTH (НОВАЯ ФИЧА)
+# TELEGRAM MINI APP AUTH
 # ============================================
 def validate_telegram_init_data(init_data: str) -> Optional[Dict[str, Any]]:
-    """Валидация initData из Telegram.WebApp для безопасной аутентификации"""
     if not BOT_TOKEN:
         return None
     
@@ -152,7 +151,6 @@ def validate_telegram_init_data(init_data: str) -> Optional[Dict[str, Any]]:
         return None
 
 def get_telegram_user_from_request() -> Optional[Dict[str, Any]]:
-    """Извлекаем данные пользователя из заголовков (новая фича Mini App)"""
     init_data = request.headers.get('X-Telegram-Init-Data')
     if not init_data:
         init_data = request.args.get('initData') or request.args.get('tgWebAppData')
@@ -162,23 +160,24 @@ def get_telegram_user_from_request() -> Optional[Dict[str, Any]]:
     return None
 
 # ============================================
-# ПУЛ СОЕДИНЕНИЙ
+# ПУЛ СОЕДИНЕНИЙ (ФИКС: 2-6 вместо 4-20)
 # ============================================
 db_pool = None
 
 def init_db_pool():
     global db_pool
     try:
+        # 🔥 УМЕНЬШЕННЫЙ ПУЛ — 2 мин, 6 макс (вместо 4-20)
         db_pool = pool.ThreadedConnectionPool(
-            4, 20,
+            2, 6,
             host=DB_HOST, database=DB_NAME, user=DB_USER,
             password=DB_PASSWORD, port=DB_PORT, connect_timeout=30,
             keepalives=1, keepalives_idle=5, keepalives_interval=2, keepalives_count=2
         )
-        logger.info("✅ Пул соединений создан")
+        logger.info("✅ DB pool created (min=2, max=6)")
         return True
     except Exception as e:
-        logger.error(f"❌ Ошибка создания пула: {e}")
+        logger.error(f"❌ DB pool error: {e}")
         return False
 
 def get_db_connection():
@@ -187,7 +186,7 @@ def get_db_connection():
     try:
         return db_pool.getconn()
     except Exception as e:
-        logger.error(f"Ошибка получения соединения: {e}")
+        logger.error(f"DB connection error: {e}")
         raise ServiceUnavailableError("Database connection failed")
 
 @contextmanager
@@ -202,7 +201,7 @@ def get_db_cursor():
         if conn:
             try: conn.rollback()
             except: pass
-        logger.error(f"Database error: {e}")
+        logger.error(f"DB error: {e}")
         raise
     finally:
         if conn:
@@ -253,15 +252,13 @@ def _update_activity_db(telegram_id):
     except: pass
 
 # ============================================
-# ASYNC TELEGRAM (ОБНОВЛЕНО - НАТИВНЫЙ ЧАТ)
+# TELEGRAM MESSAGES
 # ============================================
 def send_telegram_message(chat_id, text, open_chat_username=None):
-    """Отправка сообщения с возможностью открыть нативный чат"""
     def _send():
         try:
             payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
             
-            # Если передан username, добавляем кнопку для открытия нативного чата
             if open_chat_username:
                 payload["reply_markup"] = {
                     "inline_keyboard": [[
@@ -315,13 +312,11 @@ def generate_player_id() -> str:
     return str(random.randint(10000000, 99999999))
 
 def ensure_user_exists(telegram_id: str, username: str = '') -> Tuple[str, str]:
-    """Ник берем ТОЛЬКО из username, никаких рандомных ников"""
     with get_db_cursor() as c:
         c.execute("SELECT u.player_id, p.nick FROM users u LEFT JOIN profiles p ON p.player_id=u.player_id WHERE u.telegram_id=%s", (telegram_id,))
         r = c.fetchone()
         if r and r[0]:
             cache.set(f"pid:{telegram_id}", r[0])
-            # Если username изменился, обновляем ник
             current_nick = r[1] if r[1] else username
             if username and current_nick != username:
                 c.execute("UPDATE profiles SET nick=%s WHERE player_id=%s", (username, r[0]))
@@ -330,7 +325,6 @@ def ensure_user_exists(telegram_id: str, username: str = '') -> Tuple[str, str]:
             return r[0], current_nick
         
         pid = generate_player_id()
-        # Ник ВСЕГДА из username, если его нет - юзаем telegram_id как ник
         nick = username if username else f"player{telegram_id}"
         
         c.execute("INSERT INTO users (telegram_id, player_id, created_at, last_active, is_online, leadercoins) VALUES (%s,%s,NOW(),NOW(),TRUE,1000)", (telegram_id, pid))
@@ -346,7 +340,7 @@ def ensure_user_exists(telegram_id: str, username: str = '') -> Tuple[str, str]:
 def health():
     return jsonify({
         "status": "ok", 
-        "version": "3.0.0",
+        "version": "3.0.1",
         "features": {
             "fullscreen_mode": True,
             "native_chat": True,
@@ -358,7 +352,6 @@ def health():
 @app.route('/api/user/init', methods=['POST'])
 @rate_limit(20, 60)
 def user_init():
-    # Пробуем новую аутентификацию через initData
     telegram_data = get_telegram_user_from_request()
     
     if telegram_data and 'user' in telegram_data:
@@ -376,7 +369,6 @@ def user_init():
             "native_chat_available": True
         })
     
-    # Старый метод через тело запроса
     data = request.json
     if not data or 'telegram_id' not in data: 
         raise ValidationError("Missing telegram_id")
@@ -390,7 +382,7 @@ def user_init():
     except ServiceUnavailableError: 
         raise
     except Exception as e:
-        logger.error(f"❌ user_init: {e}")
+        logger.error(f"user_init error: {e}")
         raise ServiceUnavailableError("Unable to initialize user")
 
 @app.route('/api/user/update-username', methods=['POST'])
@@ -524,7 +516,7 @@ def create_anketa():
         cache.delete(f"prof:{pid}")
         return jsonify({"status": "ok", "anketa_id": anketa_id})
     except Exception as e:
-        logger.error(f"❌ create_anketa: {e}")
+        logger.error(f"create_anketa error: {e}")
         raise AppError(f"Failed: {str(e)}", 500)
 
 @app.route('/api/anketa/delete', methods=['POST'])
@@ -565,7 +557,7 @@ def get_next_anketa():
     if not r: return jsonify({"status": "empty", "message": "Карточки закончились"})
     return jsonify({"status": "ok", "anketa": dict(r)})
 
-# ---------- ЛАЙКИ (ОБНОВЛЕНО - НАТИВНЫЙ ЧАТ ПРИ МЭТЧЕ) ----------
+# ---------- ЛАЙКИ ----------
 @app.route('/api/like', methods=['POST'])
 @rate_limit(30, 60)
 def like_player():
@@ -590,15 +582,13 @@ def like_player():
             c.execute("SELECT 1 FROM friends WHERE (player1_id=%s AND player2_id=%s) OR (player1_id=%s AND player2_id=%s)", (pid, liked, liked, pid))
             if not c.fetchone(): c.execute("INSERT INTO friends (player1_id, player2_id, created_at) VALUES (%s,%s,NOW())", (pid, liked))
         
-        # Отправляем сообщения с кнопкой для открытия НАТИВНОГО ЧАТА
         for uid, pnick, puname in [(u1[0], n2[0], u2[1]), (u2[0], n1[0], u1[1])]:
             msg = f"❤️ Взаимный мэтч!\n\nТы и {pnick} лайкнули друг друга!\n\nНажми кнопку ниже чтобы открыть чат с тиммейтом 👇"
-            # Используем новую функцию с поддержкой нативного чата
             send_telegram_message(uid, msg, open_chat_username=puname)
         
         return jsonify({
             "status": "match",
-            "native_chat_available": True  # Флаг для фронтенда
+            "native_chat_available": True
         })
     
     with get_db_cursor() as c:
@@ -671,6 +661,5 @@ application = app
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🔥 PINGSTER v3.0 на порту {port}")
-    print(f"📱 Фичи: Fullscreen Mode | Native Chat | Device Storage Ready")
+    print(f"🔥 PINGSTER v3.0.1 на порту {port}")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
