@@ -149,26 +149,33 @@ def get_telegram_user_from_request() -> Optional[Dict[str, Any]]:
     return None
 
 # ============================================
-# ПУЛ СОЕДИНЕНИЙ (ФИКС: 1-3, retry SSL)
+# 🔥 ЛЕНИВЫЙ ПУЛ СОЕДИНЕНИЙ
 # ============================================
 db_pool = None
+_initialized = False
+_init_lock = threading.Lock()
 
-def init_db_pool():
-    global db_pool
-    try:
-        db_pool = pool.ThreadedConnectionPool(
-            1, 3,
-            host=DB_HOST, database=DB_NAME, user=DB_USER,
-            password=DB_PASSWORD, port=DB_PORT, connect_timeout=10,
-            keepalives=1, keepalives_idle=3, keepalives_interval=2, keepalives_count=3
-        )
-        logger.info("✅ DB pool created (min=1, max=3)")
-        return True
-    except Exception as e:
-        logger.error(f"❌ DB pool error: {e}")
-        return False
+def ensure_db_pool():
+    """Создаёт пул при первом обращении, а не при импорте"""
+    global db_pool, _initialized
+    if _initialized:
+        return
+    with _init_lock:
+        if not _initialized:
+            try:
+                db_pool = pool.ThreadedConnectionPool(
+                    1, 3,
+                    host=DB_HOST, database=DB_NAME, user=DB_USER,
+                    password=DB_PASSWORD, port=DB_PORT, connect_timeout=10,
+                    keepalives=1, keepalives_idle=3, keepalives_interval=2, keepalives_count=3
+                )
+                logger.info("✅ DB pool created (min=1, max=3)")
+            except Exception as e:
+                logger.error(f"❌ DB pool error: {e}")
+            _initialized = True
 
 def get_db_connection():
+    ensure_db_pool()
     if not db_pool:
         raise ServiceUnavailableError("Database pool not initialized")
     try:
@@ -193,7 +200,6 @@ def get_db_cursor():
                 try: conn.rollback()
                 except: pass
             error_str = str(e)
-            # 🔥 Ретрай при SSL-ошибках
             if ('SSL' in error_str or 'connection' in error_str.lower()) and attempt < retries - 1:
                 logger.warning(f"DB retry {attempt+1}/{retries}: {error_str[:80]}")
                 time.sleep(0.3)
@@ -316,12 +322,12 @@ def ensure_user_exists(telegram_id: str, username: str = '') -> Tuple[str, str]:
         return pid, nick
 
 # ============================================
-# ЭНДПОИНТЫ (БЕЗ ИЗМЕНЕНИЙ)
+# ЭНДПОИНТЫ
 # ============================================
 
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "version": "3.0.2", "features": {"fullscreen_mode": True, "native_chat": True, "device_storage": True}})
+    return jsonify({"status": "ok", "version": "3.0.3", "features": {"fullscreen_mode": True, "native_chat": True, "device_storage": True}})
 
 @app.route('/api/user/init', methods=['POST'])
 @rate_limit(20, 60)
@@ -569,14 +575,11 @@ def handle_500(e):
     return jsonify({"error": "Internal server error"}), 500
 
 # ============================================
-# ЗАПУСК
+# ЗАПУСК (без init_db_pool при импорте!)
 # ============================================
-if db_pool is None:
-    init_db_pool()
-
 application = app
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🔥 PINGSTER v3.0.2 on port {port}")
+    print(f"🔥 PINGSTER v3.0.3 on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
