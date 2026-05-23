@@ -1,7 +1,6 @@
-Flask
-Flask-CORS
+flask
+flask-cors
 psycopg2-binary
 requests
-gunicorn==23.0.0
-pyTelegramBotAPI
 python-dotenv
+gunicorn
