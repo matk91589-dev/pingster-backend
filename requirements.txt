@@ -2,6 +2,6 @@ Flask
 Flask-CORS
 psycopg2-binary
 requests
-gunicorn
+gunicorn==23.0.0
 pyTelegramBotAPI
 python-dotenv
