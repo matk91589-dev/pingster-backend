@@ -1,5 +1,6 @@
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
 import requests
 import time
 import os
@@ -20,13 +21,11 @@ FORUM_USERNAME = os.getenv('FORUM_USERNAME', 'pingster_team')
 FORUM_LINK = os.getenv('FORUM_LINK', 'https://t.me/pingster_team')
 SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', 'pingster_support')
 
-# 🔥 БЕЛЫЙ СПИСОК
 ALLOWED_USERS = [5015478106, 8541469401]
 
 if not TOKEN:
-    raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
+    raise ValueError("BOT_TOKEN not found!")
 
-# Хранилище сообщений для удаления старых
 user_messages = {}
 user_messages_lock = threading.Lock()
 
@@ -35,40 +34,20 @@ user_messages_lock = threading.Lock()
 # ============================================
 
 def check_server_awake():
-    """Проверка что сервер жив"""
     try:
         r = requests.get(f'{API_URL.replace("/api", "")}/health', timeout=5)
-        print(f"🔍 Проверка сервера: {r.status_code}")
-        if r.status_code == 200:
-            data = r.json()
-            features = data.get('features', {})
-            print(f"📱 Фичи сервера: fullscreen={features.get('fullscreen_mode')}, native_chat={features.get('native_chat')}")
+        print(f"Server check: {r.status_code}")
         return r.status_code == 200
-    except Exception as e:
-        print(f"❌ Сервер не отвечает: {e}")
+    except:
         return False
 
 def wake_up_server():
-    """Пробуждение сервера"""
     try:
         requests.get(f'{API_URL.replace("/api", "")}/health', timeout=3)
-        print("🔔 Пинг сервера отправлен")
     except:
         pass
 
-def delete_old_command(user_id: int, msg_type: str):
-    """Удаление старых сообщений команды"""
-    with user_messages_lock:
-        if user_id in user_messages and msg_type in user_messages[user_id]:
-            old = user_messages[user_id][msg_type]
-            if 'bot' in old:
-                try:
-                    pass
-                except:
-                    pass
-
 def save_command_message(user_id: int, msg_type: str, user_msg_id: int, bot_msg_id: int):
-    """Сохранение сообщений для последующего удаления"""
     with user_messages_lock:
         if user_id not in user_messages:
             user_messages[user_id] = {}
@@ -79,37 +58,23 @@ def save_command_message(user_id: int, msg_type: str, user_msg_id: int, bot_msg_
         }
 
 def register_user(telegram_id: int, username: str) -> str:
-    """Регистрирует пользователя в API и возвращает player_id"""
-    print(f"📝 Регистрация: tg_id={telegram_id}, username={username}")
+    print(f"Register: tg_id={telegram_id}, username={username}")
     try:
         response = requests.post(
             f'{API_URL}/user/init',
-            json={
-                'telegram_id': str(telegram_id),
-                'username': username
-            },
-            headers={
-                'Content-Type': 'application/json'
-            },
+            json={'telegram_id': str(telegram_id), 'username': username},
+            headers={'Content-Type': 'application/json'},
             timeout=10
         )
-        print(f"📥 Ответ: status={response.status_code}, body={response.text[:200]}")
-        
         if response.status_code == 200:
             data = response.json()
-            player_id = data.get('player_id')
-            nick = data.get('nick')
-            auth_method = data.get('auth_method', 'telegram_id')
-            print(f"✅ player_id={player_id}, nick={nick}, auth={auth_method}")
-            return player_id
-        
+            return data.get('player_id')
         return None
     except Exception as e:
-        print(f"❌ Ошибка регистрации: {e}")
+        print(f"Register error: {e}")
         return None
 
 def get_user_profile(telegram_id: int) -> dict:
-    """Получение профиля пользователя"""
     try:
         response = requests.post(
             f'{API_URL}/profile/get',
@@ -127,14 +92,13 @@ def get_user_profile(telegram_id: int) -> dict:
 # ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
     message = update.message
     telegram_id = update.effective_user.id
     username = update.effective_user.username or f'user_{telegram_id}'
     user_msg_id = message.message_id
     
     print(f"\n{'='*50}")
-    print(f"🚀 /start от @{username} (id: {telegram_id})")
+    print(f"/start from @{username} (id: {telegram_id})")
     
     await delete_old_bot_message(update, context, telegram_id, 'start')
     
@@ -147,39 +111,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if check_server_awake():
             player_id = register_user(telegram_id, username)
     
-    print(f"🎮 Игровой ID: {player_id}")
-    
+    print(f"Player ID: {player_id}")
     is_allowed = telegram_id in ALLOWED_USERS
-    print(f"🔐 Доступ: {'РАЗРЕШЁН' if is_allowed else 'ОБЫЧНЫЙ'}")
     
     if not is_allowed:
+        # 🔥 HTML разметка
         text = (
-            f"*@{username}*\n"
-            f"Добро пожаловать в Pingster\\!\n\n"
-            f"👤 Твой игровой ID: `{player_id or '—'}`\n\n"
-            f"🚧 Приложение пока в разработке\\.\n"
+            f"<b>@{username}</b>\n"
+            f"Добро пожаловать в Pingster!\n\n"
+            f"<b>Твой игровой ID:</b> <code>{player_id or '—'}</code>\n\n"
+            f"🚧 Приложение пока в разработке.\n"
             f"👇 Перейти в канал"
         )
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                text="📢 Telegram канал",
-                url="https://t.me/pingster_team_channel"
-            )]
+            [InlineKeyboardButton(text="📢 Telegram канал", url="https://t.me/pingster_team_channel")]
         ])
         
-        bot_msg = await message.reply_text(
-            text,
-            parse_mode='MarkdownV2',
-            reply_markup=markup
-        )
+        bot_msg = await message.reply_text(text, parse_mode='HTML', reply_markup=markup)
         save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
-        print(f"✅ Обычный юзер, player_id={player_id}")
+        print(f"Regular user, player_id={player_id}")
         return
     
+    # 🔥 ТЕСТЕР
     text = (
-        f"*@{username}*\n"
-        f"Добро пожаловать в Pingster\\!\n\n"
-        f"👤 Твой игровой ID: `{player_id or '—'}`\n\n"
+        f"<b>@{username}</b>\n"
+        f"Добро пожаловать в Pingster!\n\n"
+        f"<b>Твой игровой ID:</b> <code>{player_id or '—'}</code>\n\n"
         f"🎮 Новые фичи:\n"
         f"• Полноэкранный режим\n"
         f"• Нативный чат при мэтче\n"
@@ -193,60 +150,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="🚀 ЗАПУСТИТЬ",
             web_app=WebAppInfo(url=f'{FRONTEND_URL}/?v={cache_buster}&tg_id={telegram_id}')
         )],
-        [InlineKeyboardButton(
-            text="📢 Канал сообщества",
-            url=FORUM_LINK
-        )]
+        [InlineKeyboardButton(text="📢 Канал сообщества", url=FORUM_LINK)]
     ])
     
-    bot_msg = await message.reply_text(
-        text,
-        parse_mode='MarkdownV2',
-        reply_markup=markup
-    )
+    bot_msg = await message.reply_text(text, parse_mode='HTML', reply_markup=markup)
     save_command_message(telegram_id, 'start', user_msg_id, bot_msg.message_id)
-    print(f"✅ Тестер, player_id={player_id}")
-    print(f"{'='*50}\n")
+    print(f"Tester, player_id={player_id}")
 
 async def delete_old_bot_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, msg_type: str):
-    """Удаление старого сообщения бота"""
     with user_messages_lock:
         if user_id in user_messages and msg_type in user_messages[user_id]:
             old_data = user_messages[user_id][msg_type]
             if 'bot' in old_data:
                 try:
-                    await context.bot.delete_message(
-                        chat_id=user_id,
-                        message_id=old_data['bot']
-                    )
+                    await context.bot.delete_message(chat_id=user_id, message_id=old_data['bot'])
                 except:
                     pass
 
 # ============================================
-# ГОЛОСОВАНИЕ ЗА РЕПУТАЦИЮ
+# ГОЛОСОВАНИЕ
 # ============================================
 
 async def handle_reputation_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик голосования за репутацию"""
     query = update.callback_query
     await query.answer()
     
     callback_data = query.data
     message = query.message
-    
     vote_type = "👍" if ":up:" in callback_data else "👎"
-    print(f"🗳 Голос: {callback_data} -> {vote_type}")
     
     def send_vote():
         try:
-            r = requests.post(
-                f"{API_URL}/reputation/vote",
-                json={"callback_data": callback_data},
-                timeout=5
-            )
-            print(f"📡 API vote: {r.status_code}")
-        except Exception as e:
-            print(f"❌ API vote error: {e}")
+            requests.post(f"{API_URL}/reputation/vote", json={"callback_data": callback_data}, timeout=5)
+        except:
+            pass
     
     threading.Thread(target=send_vote, daemon=True).start()
     
@@ -266,124 +203,84 @@ async def handle_reputation_vote(update: Update, context: ContextTypes.DEFAULT_T
     
     try:
         if chat_link:
-            link_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("👉 Перейти в чат", url=chat_link)]
-            ])
-            await query.edit_message_text(
-                text=new_text,
-                reply_markup=link_markup
-            )
+            await query.edit_message_text(text=new_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👉 Перейти в чат", url=chat_link)]]))
         else:
-            await query.edit_message_text(
-                text=new_text,
-                reply_markup=None
-            )
-        print("✅ Сообщение отредактировано")
-    except Exception as e:
-        print(f"❌ Ошибка редактирования: {e}")
+            await query.edit_message_text(text=new_text)
+    except:
+        pass
 
 # ============================================
-# КОМАНДА /profile — ПРОСМОТР ПРОФИЛЯ
+# /profile
 # ============================================
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает профиль пользователя"""
     telegram_id = update.effective_user.id
-    
     profile_data = get_user_profile(telegram_id)
     
     if profile_data.get('status') == 'ok':
-        nick = profile_data.get('nick', update.effective_user.username or '')
-        player_id = profile_data.get('player_id')
-        age = profile_data.get('age', 'не указан')
-        steam = profile_data.get('steam_link', 'не указан')
-        faceit = profile_data.get('faceit_link', 'не указан')
+        nick = profile_data.get('nick', '—')
+        player_id = profile_data.get('player_id', '—')
+        age = profile_data.get('age', '—')
+        steam = profile_data.get('steam_link', '—')
+        faceit = profile_data.get('faceit_link', '—')
         
         text = (
-            f"*Профиль игрока*\n\n"
-            f"👤 Ник: {nick}\n"
-            f"🆔 ID: `{player_id}`\n"
-            f"🎂 Возраст: {age}\n"
-            f"🎮 Steam: {steam}\n"
-            f"🏆 Faceit: {faceit}"
+            f"<b>Профиль игрока</b>\n\n"
+            f"<b>Ник:</b> {nick}\n"
+            f"<b>ID:</b> <code>{player_id}</code>\n"
+            f"<b>Возраст:</b> {age}\n"
+            f"<b>Steam:</b> {steam}\n"
+            f"<b>Faceit:</b> {faceit}"
         )
-        
-        await update.message.reply_text(
-            text,
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(text, parse_mode='HTML')
     else:
-        await update.message.reply_text("❌ Профиль не найден. Используйте /start")
+        await update.message.reply_text("Профиль не найден. Используйте /start")
 
 # ============================================
-# УДАЛЕНИЕ НЕПОНЯТНЫХ СООБЩЕНИЙ
+# УДАЛЕНИЕ СООБЩЕНИЙ
 # ============================================
 
 async def delete_unknown_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удаление всех непонятных сообщений в личке"""
     message = update.message
-    
     if message.text and message.text.startswith('/'):
         return
-    
     if update.effective_user.is_bot:
         return
-    
     if message.chat.type == 'private':
         try:
             await message.delete()
-            print(f"🗑 Удалено сообщение от {update.effective_user.id}")
-        except Exception as e:
-            print(f"⚠️ Ошибка удаления: {e}")
+        except:
+            pass
 
 # ============================================
 # ОБРАБОТКА ОШИБОК
 # ============================================
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный обработчик ошибок"""
-    print(f"❌ Ошибка: {context.error}")
-    traceback.print_exception(type(context.error), context.error, context.error.__traceback__)
+    print(f"Error: {context.error}")
 
 # ============================================
-# 🔥 ЗАПУСК БОТА (ФИКС PYTHON 3.14)
+# ЗАПУСК
 # ============================================
 
 def main():
-    """Главная функция запуска бота"""
-    print("🤖 Pingster бот запускается...")
-    print(f"📡 API: {API_URL}")
-    print(f"🎨 Frontend: {FRONTEND_URL}")
-    print(f"👥 Тестеры: {ALLOWED_USERS}")
-    print(f"📱 Новые фичи: Fullscreen Mode | Native Chat | Device Storage")
-    print()
+    print("Bot starting...")
     
-    # 🔥 ФИКС PYTHON 3.14 — принудительно создаём event loop
+    # 🔥 FIX PYTHON 3.14
     try:
         asyncio.get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
     
-    # Создаем приложение
     application = Application.builder().token(TOKEN).build()
     
-    # Регистрируем обработчики
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('profile', profile))
-    application.add_handler(CallbackQueryHandler(
-        handle_reputation_vote,
-        pattern='^vote:'
-    ))
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        delete_unknown_messages
-    ))
-    
-    # Обработчик ошибок
+    application.add_handler(CallbackQueryHandler(handle_reputation_vote, pattern='^vote:'))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, delete_unknown_messages))
     application.add_error_handler(error_handler)
     
-    # Запускаем бота
-    print("✅ Бот готов к работе!")
+    print("Bot ready!")
     application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
 
 if __name__ == '__main__':
