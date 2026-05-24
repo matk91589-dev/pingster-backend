@@ -3,6 +3,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 import requests
 import time
 import os
+import asyncio
 import threading
 import traceback
 from dotenv import load_dotenv
@@ -62,8 +63,7 @@ def delete_old_command(user_id: int, msg_type: str):
             old = user_messages[user_id][msg_type]
             if 'bot' in old:
                 try:
-                    # В python-telegram-bot v20+ нужно использовать bot.delete_message
-                    pass  # Будет удалено через контекст
+                    pass
                 except:
                     pass
 
@@ -82,7 +82,6 @@ def register_user(telegram_id: int, username: str) -> str:
     """Регистрирует пользователя в API и возвращает player_id"""
     print(f"📝 Регистрация: tg_id={telegram_id}, username={username}")
     try:
-        # Используем новый эндпоинт с поддержкой initData
         response = requests.post(
             f'{API_URL}/user/init',
             json={
@@ -137,10 +136,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"\n{'='*50}")
     print(f"🚀 /start от @{username} (id: {telegram_id})")
     
-    # Удаляем старое сообщение бота если есть
     await delete_old_bot_message(update, context, telegram_id, 'start')
     
-    # 🔥 ВСЕГДА РЕГИСТРИРУЕМ — даже если сервер спит, пробуем
     player_id = None
     if check_server_awake():
         player_id = register_user(telegram_id, username)
@@ -156,7 +153,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"🔐 Доступ: {'РАЗРЕШЁН' if is_allowed else 'ОБЫЧНЫЙ'}")
     
     if not is_allowed:
-        # 🔥 ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ
         text = (
             f"*@{username}*\n"
             f"Добро пожаловать в Pingster\\!\n\n"
@@ -180,7 +176,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"✅ Обычный юзер, player_id={player_id}")
         return
     
-    # 🔥 ТЕСТЕР — показываем WebApp кнопку
     text = (
         f"*@{username}*\n"
         f"Добро пожаловать в Pingster\\!\n\n"
@@ -238,13 +233,10 @@ async def handle_reputation_vote(update: Update, context: ContextTypes.DEFAULT_T
     
     callback_data = query.data
     message = query.message
-    chat_id = message.chat.id
-    message_id = message.message_id
     
     vote_type = "👍" if ":up:" in callback_data else "👎"
     print(f"🗳 Голос: {callback_data} -> {vote_type}")
     
-    # Отправляем голос в API асинхронно
     def send_vote():
         try:
             r = requests.post(
@@ -258,7 +250,6 @@ async def handle_reputation_vote(update: Update, context: ContextTypes.DEFAULT_T
     
     threading.Thread(target=send_vote, daemon=True).start()
     
-    # Обновляем сообщение
     chat_link = None
     if message.reply_markup:
         for row in message.reply_markup.inline_keyboard:
@@ -298,12 +289,11 @@ async def handle_reputation_vote(update: Update, context: ContextTypes.DEFAULT_T
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает профиль пользователя"""
     telegram_id = update.effective_user.id
-    username = update.effective_user.username or f'user_{telegram_id}'
     
     profile_data = get_user_profile(telegram_id)
     
     if profile_data.get('status') == 'ok':
-        nick = profile_data.get('nick', username)
+        nick = profile_data.get('nick', update.effective_user.username or '')
         player_id = profile_data.get('player_id')
         age = profile_data.get('age', 'не указан')
         steam = profile_data.get('steam_link', 'не указан')
@@ -333,15 +323,12 @@ async def delete_unknown_messages(update: Update, context: ContextTypes.DEFAULT_
     """Удаление всех непонятных сообщений в личке"""
     message = update.message
     
-    # Пропускаем команды
     if message.text and message.text.startswith('/'):
         return
     
-    # Пропускаем ботов
     if update.effective_user.is_bot:
         return
     
-    # Удаляем только в личных сообщениях
     if message.chat.type == 'private':
         try:
             await message.delete()
@@ -359,7 +346,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     traceback.print_exception(type(context.error), context.error, context.error.__traceback__)
 
 # ============================================
-# ЗАПУСК БОТА
+# 🔥 ЗАПУСК БОТА (ФИКС PYTHON 3.14)
 # ============================================
 
 def main():
@@ -370,6 +357,12 @@ def main():
     print(f"👥 Тестеры: {ALLOWED_USERS}")
     print(f"📱 Новые фичи: Fullscreen Mode | Native Chat | Device Storage")
     print()
+    
+    # 🔥 ФИКС PYTHON 3.14 — принудительно создаём event loop
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     
     # Создаем приложение
     application = Application.builder().token(TOKEN).build()
@@ -391,7 +384,7 @@ def main():
     
     # Запускаем бота
     print("✅ Бот готов к работе!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
 
 if __name__ == '__main__':
     main()
